@@ -111,7 +111,7 @@ def _normalize_appointment_payload(
     *,
     current: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    title = (payload.get("title") or "").strip() or (current or {}).get("title") or "Site Visit"
+    title = (payload.get("title") or "").strip() or (current or {}).get("title") or "Appointment"
     contact_name = (payload.get("contact_name") or (current or {}).get("contact_name") or "").strip()
     contact_phone = (payload.get("contact_phone") or (current or {}).get("contact_phone") or "").strip()
     notes = payload.get("notes")

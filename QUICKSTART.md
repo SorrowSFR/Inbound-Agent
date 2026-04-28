@@ -43,6 +43,7 @@ Run these SQL files in Supabase:
 If you are upgrading from the old WhatsApp/dashboard branch, also run:
 
 6. `sql/supabase/migration_v6_backend_cleanup.sql`
+7. `sql/supabase/migration_v7_kb_demo_sources.sql`
 
 ## 4. Start
 
@@ -64,7 +65,19 @@ python kb_worker.py
 - `GET /openapi.json`
 - `GET /api/config`
 
-## 6. Build a UI separately
+## 6. Coolify
+
+Use the repo `Dockerfile`.
+
+Set:
+
+- public port: `8000`
+- health check path: `/health`
+- persistent storage: `/app/data`
+
+Full steps: [docs/deployment/coolify.md](docs/deployment/coolify.md)
+
+## 7. Build a UI separately
 
 This repo does not include a finished frontend. The frontend must be built separately.
 
@@ -93,13 +106,9 @@ http://127.0.0.1:8000
 VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-or:
+7. Tell the agent to use Vite on port `5173`.
 
-```env
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-```
-
-7. In the generated frontend folder, run:
+8. In the generated frontend folder, run:
 
 ```bash
 npm install

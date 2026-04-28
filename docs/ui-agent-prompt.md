@@ -25,7 +25,7 @@ Create a polished internal operations console for a voice AI system. The UI shou
 - inspect call logs, transcripts, and summary stats
 - browse contacts derived from call history and appointments
 - create, update, and cancel appointments
-- manage the knowledge base, file uploads, LeadRat sync, and KB search
+- manage the knowledge base, PDF uploads, website URL/sitemap ingestion, and KB search
 - dispatch single and bulk outbound calls
 
 This frontend must feel cohesive and shippable. It should be something a team could actually deploy and use.
@@ -70,14 +70,23 @@ Design expectations:
 
 If you choose a component library, use it well. The result should still feel customized and deliberate.
 
-## Preferred Frontend Approach
+## Required Frontend Stack
 
-Use a modern TypeScript stack.
+Use Vite. Do not use Next.js.
 
-If no stack is mandated, prefer one of:
+Build with:
 
-- Next.js + TypeScript + Tailwind CSS
 - Vite + React + TypeScript + Tailwind CSS
+
+The local dev server must run on port `5173`.
+
+Use these script behaviors:
+
+- `npm run dev` starts Vite on `0.0.0.0:5173`
+- `npm run build` creates a production build in `dist`
+- `npm run preview` serves the production build on `0.0.0.0:5173`
+
+Use `VITE_API_BASE_URL` for the backend URL. Include it in the frontend `.env.example`.
 
 Structure the app cleanly with:
 
@@ -112,7 +121,6 @@ Build the app around these primary sections:
   - Supabase settings
   - Telegram notifications
   - KB settings
-  - LeadRat integration settings
 - include save feedback and safe handling for secret-like fields
 
 3. Call Logs
@@ -139,15 +147,11 @@ Build the app around these primary sections:
 - KB status panel from `/api/kb/status`
 - sources table from `/api/kb/sources`
 - create/edit/delete source flows
+- website URL source flow that accepts normal pages or sitemap URLs
 - file upload flow via `/api/kb/upload`
 - sync actions for eligible sources
 - ingest jobs table from `/api/kb/jobs`
 - KB search playground using `/api/kb/search`
-- inventory search UI using `/api/kb/inventory/search`
-- LeadRat integration section using:
-  - `GET /api/kb/integrations/leadrat/status`
-  - `POST /api/kb/integrations/leadrat/connect`
-  - `POST /api/kb/integrations/leadrat/sync`
 
 7. Outbound Calls
 - single call form using `POST /api/call/single`

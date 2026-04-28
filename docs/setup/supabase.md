@@ -19,6 +19,7 @@ Run these files in order:
 If the deployment previously used the WhatsApp/demo/dashboard branch, run this after the files above:
 
 6. `sql/supabase/migration_v6_backend_cleanup.sql`
+7. `sql/supabase/migration_v7_kb_demo_sources.sql`
 
 ## Tables retained in this branch
 

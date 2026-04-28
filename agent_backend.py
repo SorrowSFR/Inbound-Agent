@@ -108,7 +108,7 @@ from backend_events import handle_call_no_booking
 from calendar_tools import async_create_booking, get_available_slots
 
 DEFAULT_GEMINI_TTS_SAMPLE_RATE = 24000
-DEFAULT_AGENT_NAME = "outbound-caller"
+DEFAULT_AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "vobiz-demo-agent").strip() or "vobiz-demo-agent"
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _call_timestamps: dict[str, list[float]] = defaultdict(list)
@@ -660,31 +660,7 @@ class AgentTools(llm.ToolContext):
         finally:
             self._record_tool_time(started_at)
 
-    @llm.function_tool(description="Search the live property inventory for confirmed facts such as price, BHK, locality, possession, status, or amenities.")
-    async def search_inventory(self, query: Annotated[str, "Inventory question in natural language"]) -> str:
-        started_at = time.monotonic()
-        try:
-            results = await asyncio.to_thread(
-                kb.search_inventory,
-                query,
-                limit=max(1, parse_int(self.live_config.get("kb_inventory_top_k"), 3)),
-                config=self.live_config,
-            )
-            if not results:
-                return "I do not have a confirmed inventory match for that yet."
-            lines = []
-            for index, item in enumerate(results[:3], start=1):
-                fact_block = str(item.get("fact_block") or "").strip()
-                if fact_block:
-                    lines.append(f"{index}. {fact_block}")
-            return "\n".join(lines) if lines else "I do not have a confirmed inventory match for that yet."
-        except Exception as exc:
-            logger.error("[TOOL] search_inventory failed: %s", exc)
-            return "I am having trouble checking the live inventory right now."
-        finally:
-            self._record_tool_time(started_at)
-
-    @llm.function_tool(description="Search the knowledge base for brochure notes, PDF excerpts, website content, or CRM-grounded context.")
+    @llm.function_tool(description="Search the knowledge base for PDF excerpts and website content.")
     async def search_knowledge_base(self, query: Annotated[str, "Knowledge base question in natural language"]) -> str:
         started_at = time.monotonic()
         try:
@@ -722,7 +698,7 @@ class OutboundAssistant(Agent):
         if not base_instructions:
             base_instructions = (
                 "You are Aryan from SPX AI. Qualify the caller, answer with confirmed information, and help "
-                "them book a site visit or transfer to a human when needed."
+                "them book an appointment or transfer to a human when needed."
             )
 
         trusted_phone = bool(self._caller_profile.get("trusted_phone")) and bool(
@@ -752,9 +728,9 @@ class OutboundAssistant(Agent):
             + "\n\n[CALL POLICY]\n"
             + "This backend-only branch supports inbound and outbound phone calls only.\n"
             + "Do not promise WhatsApp messages, reminders, demo links, or follow-up automation.\n"
-            + "Use inventory and knowledge-base tools before guessing.\n"
+            + "Use the knowledge-base tool before guessing.\n"
             + "When facts are not confirmed, say so plainly.\n"
-            + "Default next steps are a site visit, a callback, or a human transfer."
+            + "Default next steps are an appointment, a callback, or a human transfer."
             + get_ist_time_context()
             + get_language_instruction(str(self._live_config.get('lang_preset') or 'multilingual'))
         )

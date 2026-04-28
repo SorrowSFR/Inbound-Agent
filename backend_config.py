@@ -53,7 +53,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "kb_backend": "local_faiss",
     "kb_data_dir": "data/kb",
     "kb_top_k": 4,
-    "kb_inventory_top_k": 3,
     "kb_similarity_threshold": 0.18,
     "kb_context_char_budget": 2800,
     "kb_live_timeout_ms": 150,
@@ -68,12 +67,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "kb_embedding_fallback_model": "gemini-embedding-001",
     "kb_index_kind": "flat_ip",
     "kb_rerank_enabled": False,
-    "leadrat_enabled": False,
-    "leadrat_tenant": "",
-    "leadrat_api_key": "",
-    "leadrat_secret_key": "",
-    "leadrat_sync_interval_minutes": 5,
-    "leadrat_base_url": "https://connect.leadrat.com",
 }
 
 ALLOWED_CONFIG_KEYS = tuple(DEFAULT_CONFIG.keys())
@@ -107,7 +100,6 @@ ENV_KEY_MAP = {
     "kb_backend": "KB_BACKEND",
     "kb_data_dir": "KB_DATA_DIR",
     "kb_top_k": "KB_TOP_K",
-    "kb_inventory_top_k": "KB_INVENTORY_TOP_K",
     "kb_similarity_threshold": "KB_SIMILARITY_THRESHOLD",
     "kb_context_char_budget": "KB_CONTEXT_CHAR_BUDGET",
     "kb_live_timeout_ms": "KB_LIVE_TIMEOUT_MS",
@@ -122,12 +114,6 @@ ENV_KEY_MAP = {
     "kb_embedding_fallback_model": "KB_EMBEDDING_FALLBACK_MODEL",
     "kb_index_kind": "KB_INDEX_KIND",
     "kb_rerank_enabled": "KB_RERANK_ENABLED",
-    "leadrat_enabled": "LEADRAT_ENABLED",
-    "leadrat_tenant": "LEADRAT_TENANT",
-    "leadrat_api_key": "LEADRAT_API_KEY",
-    "leadrat_secret_key": "LEADRAT_SECRET_KEY",
-    "leadrat_sync_interval_minutes": "LEADRAT_SYNC_INTERVAL_MINUTES",
-    "leadrat_base_url": "LEADRAT_BASE_URL",
 }
 
 
@@ -243,7 +229,6 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "kb_backend": str(raw.get("kb_backend") or "local_faiss").strip() or "local_faiss",
         "kb_data_dir": str(raw.get("kb_data_dir") or "data/kb").strip() or "data/kb",
         "kb_top_k": max(1, parse_int(raw.get("kb_top_k"), 4)),
-        "kb_inventory_top_k": max(1, parse_int(raw.get("kb_inventory_top_k"), 3)),
         "kb_similarity_threshold": parse_float(raw.get("kb_similarity_threshold"), 0.18),
         "kb_context_char_budget": max(400, parse_int(raw.get("kb_context_char_budget"), 2800)),
         "kb_live_timeout_ms": max(50, parse_int(raw.get("kb_live_timeout_ms"), 150)),
@@ -258,12 +243,6 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "kb_embedding_fallback_model": str(raw.get("kb_embedding_fallback_model") or "gemini-embedding-001").strip() or "gemini-embedding-001",
         "kb_index_kind": str(raw.get("kb_index_kind") or "flat_ip").strip().lower() or "flat_ip",
         "kb_rerank_enabled": parse_bool(raw.get("kb_rerank_enabled"), False),
-        "leadrat_enabled": parse_bool(raw.get("leadrat_enabled"), False),
-        "leadrat_tenant": str(raw.get("leadrat_tenant") or "").strip(),
-        "leadrat_api_key": str(raw.get("leadrat_api_key") or "").strip(),
-        "leadrat_secret_key": str(raw.get("leadrat_secret_key") or "").strip(),
-        "leadrat_sync_interval_minutes": max(5, parse_int(raw.get("leadrat_sync_interval_minutes"), 5)),
-        "leadrat_base_url": str(raw.get("leadrat_base_url") or "https://connect.leadrat.com").strip() or "https://connect.leadrat.com",
     }
     return normalized
 
@@ -311,4 +290,3 @@ def get_outbound_sip_trunk_id(config: dict[str, Any], metadata: dict[str, Any] |
         or os.environ.get("OUTBOUND_TRUNK_ID", "")
         or os.environ.get("SIP_OUTBOUND_TRUNK_ID", "")
     )
-

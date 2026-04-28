@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from livekit import api
 from backend_config import get_outbound_sip_trunk_id, read_config as read_backend_config
 
-DEFAULT_AGENT_NAME = "outbound-caller"
+DEFAULT_AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "vobiz-demo-agent").strip() or "vobiz-demo-agent"
 
 load_dotenv(".env")
 

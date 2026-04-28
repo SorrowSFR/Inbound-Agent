@@ -1,122 +1,210 @@
-# Vobiz + Frontend Setup Guide
+# Vobiz + LiveKit + Supabase + Frontend Setup Guide
 
-This project is a backend-only voice agent.
+This is the slow, no-skipped-steps guide.
 
-That means:
+The backend does three jobs:
 
-- This repo runs the voice agent and API.
-- This repo does not include a finished frontend dashboard.
-- You must use the frontend prompt in `docs/ui-agent-prompt.md` to make a coding agent build the frontend.
-- Do not treat the prompt like normal notes. Paste the prompt into a coding agent and tell it to create the actual frontend files.
+1. It runs the voice agent.
+2. It exposes the API for logs, config, appointments, calls, and knowledge base.
+3. It talks to LiveKit, Supabase, Gemini, and Vobiz.
 
-Think of it like this:
+The frontend is not inside this repo. A coding agent builds it later from `docs/ui-agent-prompt.md`.
 
-1. Vobiz receives the phone call.
-2. Vobiz sends the call to LiveKit.
-3. LiveKit sends the call to this backend voice agent.
-4. The backend saves logs, appointments, stats, config, and knowledge base data.
-5. A separate frontend dashboard talks to this backend API.
-6. The frontend is built from the prompt in `docs/ui-agent-prompt.md`.
+## The Simple Picture
 
-## Very Important
+Inbound call:
 
-This app is inbound-only for the Vobiz setup.
+```text
+Customer calls your Vobiz number
+-> Vobiz sends the call to LiveKit
+-> LiveKit sends the call to this agent
+-> The backend saves logs and appointments
+```
 
-For inbound calls:
+Outbound call:
 
-- The app does not place outbound calls through Vobiz.
-- The Vobiz trunk must point to your LiveKit SIP domain.
-- You do not need a Vobiz `SIP_TRUNK_ID` in `.env` for inbound calls.
+```text
+Frontend or API asks backend to call a phone number
+-> Backend asks LiveKit to start a room
+-> LiveKit uses its outbound SIP trunk
+-> Vobiz places the phone call
+-> The agent talks to the customer
+```
 
-The backend may still contain outbound-call API endpoints for LiveKit dispatching, but this Vobiz guide is only about inbound calls coming from Vobiz into LiveKit.
+Transfer to human:
 
-## What You Need Before Starting
+```text
+Customer is already talking to the agent
+-> Customer asks for a human
+-> Agent sends a SIP transfer through LiveKit
+-> Vobiz routes the call to your human number
+```
 
-You need accounts for:
+## Values To Save First
 
-- Vobiz
-- LiveKit
-- Google Gemini
-- Supabase
+Make a private note called `voice-agent-secrets`.
 
-You also need this installed on your computer:
+Save these values.
 
-- Python
-- Git
-- A terminal such as PowerShell
-- A coding agent or AI coding tool that can create frontend files
+### Vobiz Values
 
-Examples of coding agents:
+```text
+VOBIZ_ACCOUNT_ID=
+VOBIZ_AUTH_ID=
+VOBIZ_AUTH_TOKEN=
+VOBIZ_INBOUND_TRUNK_ID=
+VOBIZ_INBOUND_TRUNK_DOMAIN=
+VOBIZ_SIP_DOMAIN=
+VOBIZ_USERNAME=
+VOBIZ_PASSWORD=
+VOBIZ_OUTBOUND_NUMBER=
+```
 
-- Codex
-- Claude Code
-- Cursor
-- Windsurf
-- Any agent that can read files, write files, and run commands
+### LiveKit Values
 
-## The 5 Vobiz Values To Save
+```text
+LIVEKIT_URL=
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+LIVEKIT_SIP_DOMAIN=
+LIVEKIT_INBOUND_TRUNK_ID=
+LIVEKIT_DISPATCH_RULE_ID=
+SIP_TRUNK_ID=
+LIVEKIT_AGENT_NAME=vobiz-demo-agent
+```
 
-When setting up Vobiz, save these values somewhere safe:
+`SIP_TRUNK_ID` means the LiveKit outbound trunk ID. It usually starts with `ST_`.
 
-1. `account_id`
-2. `auth_id`
-3. `auth_token`
-4. `trunk_id`
-5. `trunk_domain`
+### Supabase Values
 
-The backend mostly needs the Vobiz-to-LiveKit connection to be correct. These five values are useful for support, debugging, and future trunk edits.
+```text
+SUPABASE_URL=
+SUPABASE_KEY=
+```
 
-## Step 1: Get Vobiz API Keys
+### Gemini Value
 
-1. Sign in to Vobiz.
-2. Open the API or developer section.
-3. Copy your `account_id`.
-4. Copy your `auth_id`.
-5. Generate an `auth_token`.
-6. Save the token somewhere safe.
+```text
+GOOGLE_API_KEY=
+```
 
-Do not paste your real token into public chats, screenshots, GitHub issues, or shared docs.
+Do not paste real tokens into GitHub, screenshots, public chats, or shared docs.
 
-## Step 2: Get Your LiveKit SIP Domain
+## Step 1: Create The Supabase Project
 
-1. Sign in to LiveKit.
-2. Open your project.
-3. Find your SIP domain.
-4. It usually looks like this:
+1. Open Supabase.
+2. Create a new project.
+3. Wait until the project is ready.
+4. Open Project Settings.
+5. Open API.
+6. Copy the Project URL.
+7. Save it as `SUPABASE_URL`.
+8. Copy the anon/public key.
+9. Save it as `SUPABASE_KEY`.
+
+Now create the database tables.
+
+1. Open Supabase SQL Editor.
+2. Open `sql/supabase/setup.sql` in this repo.
+3. Copy the whole file.
+4. Paste it into Supabase SQL Editor.
+5. Click Run.
+6. Repeat for every file below, in this exact order:
+
+```text
+1. sql/supabase/setup.sql
+2. sql/supabase/migration_v2.sql
+3. sql/supabase/migration_v3.sql
+4. sql/supabase/migration_v4_voice_metrics.sql
+5. sql/supabase/migration_v5_kb.sql
+```
+
+If this is an old deployment, also run:
+
+```text
+6. sql/supabase/migration_v6_backend_cleanup.sql
+7. sql/supabase/migration_v7_kb_demo_sources.sql
+```
+
+Supabase is done when the SQL files run without errors.
+
+## Step 2: Create The LiveKit Project
+
+1. Open LiveKit Cloud.
+2. Create or open your project.
+3. Copy the project URL.
+4. Save it as `LIVEKIT_URL`.
+
+It usually looks like:
+
+```text
+wss://your-project.livekit.cloud
+```
+
+Now create API keys.
+
+1. In LiveKit Cloud, open Settings.
+2. Open API Keys.
+3. Create an API key.
+4. Copy the key.
+5. Save it as `LIVEKIT_API_KEY`.
+6. Copy the secret.
+7. Save it as `LIVEKIT_API_SECRET`.
+
+Now find the SIP domain.
+
+1. In LiveKit Cloud, open Telephony or SIP.
+2. Find your SIP domain or SIP URI.
+3. Save it as `LIVEKIT_SIP_DOMAIN`.
+
+It usually looks like:
 
 ```text
 your-project.sip.livekit.cloud
 ```
 
-This LiveKit SIP domain is the destination where Vobiz must send inbound calls.
+## Step 3: Set Up Inbound Calling
 
-## Step 3: Create A Vobiz SIP Trunk
+Inbound means customers call your Vobiz number and reach the agent.
 
-Use either:
+### 3A. Create The Vobiz Inbound Trunk
 
-- the Vobiz dashboard, or
-- the Vobiz trunk API
+In Vobiz:
 
-The most important setting is:
+1. Open Trunks or SIP Trunks.
+2. Create a trunk.
+3. Name it:
 
 ```text
-inbound_destination = your LiveKit SIP domain
+Vobiz to LiveKit inbound
 ```
 
-Set:
+4. Set trunk direction to:
 
-- `trunk_direction` to `inbound` or `both`
-- `transport` to `udp`, unless your provider setup says otherwise
-- `secure` to `false`, unless your provider setup says otherwise
-- `inbound_destination` to your LiveKit SIP domain
+```text
+inbound
+```
 
-Example destination:
+or:
+
+```text
+both
+```
+
+5. Set transport to `udp`, unless Vobiz support tells you otherwise.
+6. Set secure/TLS to `false`, unless Vobiz support tells you otherwise.
+7. Set inbound destination to your LiveKit SIP domain:
 
 ```text
 your-project.sip.livekit.cloud
 ```
 
-Example API call:
+8. Attach your Vobiz phone number to this trunk.
+9. Save the trunk.
+10. Save the `trunk_id`.
+11. Save the `trunk_domain`.
+
+If you use the Vobiz API, the request looks like this:
 
 ```bash
 curl -X POST "https://api.vobiz.ai/api/v1/account/{account_id}/trunks" \
@@ -124,79 +212,287 @@ curl -X POST "https://api.vobiz.ai/api/v1/account/{account_id}/trunks" \
   -H "X-Auth-Token: {auth_token}" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "SPX Voice Agent",
-    "trunk_direction": "both",
+    "name": "Vobiz to LiveKit inbound",
+    "trunk_direction": "inbound",
     "transport": "udp",
     "secure": false,
     "inbound_destination": "your-project.sip.livekit.cloud"
   }'
 ```
 
-After this succeeds, save:
+### 3B. Create The LiveKit Inbound Trunk
 
-- `trunk_id`
-- `trunk_domain`
+In LiveKit Cloud:
 
-## Step 4: Create Your Backend `.env` File
+1. Open Telephony.
+2. Open SIP.
+3. Open Inbound Trunks.
+4. Create a new inbound trunk.
+5. Name it:
 
-Copy the example environment file:
+```text
+Vobiz inbound
+```
+
+6. Add the phone number that Vobiz will send into LiveKit.
+7. Save the trunk.
+8. Copy the LiveKit inbound trunk ID.
+9. Save it as `LIVEKIT_INBOUND_TRUNK_ID`.
+
+If LiveKit asks for JSON, use this shape:
+
+```json
+{
+  "name": "Vobiz inbound",
+  "numbers": ["+91XXXXXXXXXX"]
+}
+```
+
+### 3C. Create The LiveKit Dispatch Rule
+
+This tells LiveKit which agent should answer inbound calls.
+
+In LiveKit Cloud:
+
+1. Open Telephony.
+2. Open SIP.
+3. Open Dispatch Rules.
+4. Create a rule.
+5. Choose the inbound trunk you created.
+6. Send calls to this agent:
+
+```text
+vobiz-demo-agent
+```
+
+7. Save the rule.
+8. Copy the dispatch rule ID.
+9. Save it as `LIVEKIT_DISPATCH_RULE_ID`.
+
+If LiveKit asks for JSON, use this shape:
+
+```json
+{
+  "name": "Vobiz inbound to demo agent",
+  "rule": {
+    "dispatchRuleIndividual": {
+      "roomPrefix": "inbound-"
+    }
+  },
+  "roomConfig": {
+    "agents": [
+      {
+        "agentName": "vobiz-demo-agent"
+      }
+    ]
+  }
+}
+```
+
+If LiveKit shows a trunk selector in the UI, choose your `Vobiz inbound` trunk there. If you omit trunk matching, LiveKit can match all inbound trunks.
+
+Inbound setup is done when a call to the Vobiz number creates a LiveKit room and dispatches `vobiz-demo-agent`.
+
+## Step 4: Set Up Outbound Calling
+
+Outbound means the backend starts a call to a customer.
+
+You need two things:
+
+1. Vobiz must allow outbound SIP calls.
+2. LiveKit must have an outbound trunk that uses Vobiz.
+
+### 4A. Set Up Outbound In Vobiz
+
+In Vobiz:
+
+1. Open Trunks or SIP Trunks.
+2. Create a trunk, or edit the existing trunk.
+3. Name it:
+
+```text
+LiveKit to Vobiz outbound
+```
+
+4. Set trunk direction to:
+
+```text
+outbound
+```
+
+or:
+
+```text
+both
+```
+
+5. Make sure outbound calling is enabled.
+6. Make sure your outbound caller ID number is approved.
+7. Save these values:
+
+```text
+VOBIZ_SIP_DOMAIN=your_sip_domain.sip.vobiz.ai
+VOBIZ_USERNAME=your_vobiz_sip_username
+VOBIZ_PASSWORD=your_vobiz_sip_password
+VOBIZ_OUTBOUND_NUMBER=+91XXXXXXXXXX
+```
+
+If Vobiz asks what system will connect to it, the answer is:
+
+```text
+LiveKit Cloud outbound SIP
+```
+
+If Vobiz asks for allowed IPs, use the LiveKit Cloud SIP IPs from LiveKit's SIP docs or ask LiveKit support for the current range.
+
+### 4B. Create The LiveKit Outbound Trunk
+
+In LiveKit Cloud:
+
+1. Open Telephony.
+2. Open SIP.
+3. Open Outbound Trunks.
+4. Create a new outbound trunk.
+5. Name it:
+
+```text
+Vobiz outbound
+```
+
+6. Set the SIP address to:
+
+```text
+your_sip_domain.sip.vobiz.ai
+```
+
+7. Set auth username to your `VOBIZ_USERNAME`.
+8. Set auth password to your `VOBIZ_PASSWORD`.
+9. Add the outbound phone number:
+
+```text
++91XXXXXXXXXX
+```
+
+10. Save the trunk.
+11. Copy the LiveKit outbound trunk ID.
+12. Put that value in `.env` as `SIP_TRUNK_ID`.
+
+If LiveKit asks for JSON, use this shape:
+
+```json
+{
+  "name": "Vobiz outbound",
+  "address": "your_sip_domain.sip.vobiz.ai",
+  "numbers": ["+91XXXXXXXXXX"],
+  "authUsername": "your_vobiz_sip_username",
+  "authPassword": "your_vobiz_sip_password"
+}
+```
+
+### 4C. Sync The Outbound Trunk From This Repo
+
+Use this if you already created the LiveKit outbound trunk and want the repo to update it with the Vobiz values from `.env`.
+
+First put these in `.env`:
+
+```env
+SIP_TRUNK_ID=ST_xxxxxxxxxxxxxxxx
+VOBIZ_SIP_DOMAIN=your_sip_domain.sip.vobiz.ai
+VOBIZ_USERNAME=your_vobiz_sip_username
+VOBIZ_PASSWORD=your_vobiz_sip_password
+VOBIZ_OUTBOUND_NUMBER=+91XXXXXXXXXX
+```
+
+Then run:
+
+```powershell
+python setup_trunk.py
+```
+
+Success looks like:
+
+```text
+OK: SIP trunk updated successfully.
+```
+
+## Step 5: Set Up Human Transfer
+
+Human transfer means the caller says "transfer me to a person".
+
+Put these in `.env`:
+
+```env
+VOBIZ_SIP_DOMAIN=your_sip_domain.sip.vobiz.ai
+DEFAULT_TRANSFER_NUMBER=+91XXXXXXXXXX
+```
+
+The agent will build a SIP transfer target like:
+
+```text
+sip:+91XXXXXXXXXX@your_sip_domain.sip.vobiz.ai
+```
+
+Your Vobiz trunk must allow SIP transfer or SIP REFER for this to work.
+
+## Step 6: Create The Backend `.env`
+
+Copy the example:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Then open `.env` and fill in your real values.
+Open `.env`.
 
-For this backend to run, these are the main values you need:
+Fill this minimum set:
 
 ```env
-GOOGLE_API_KEY=your_gemini_key
-LIVEKIT_URL=wss://your-livekit-url
-LIVEKIT_API_KEY=your-livekit-api-key
-LIVEKIT_API_SECRET=your-livekit-api-secret
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_key
+HOST=0.0.0.0
+PORT=8000
+AGENT_HOST=0.0.0.0
+AGENT_PORT=8081
+APP_DATA_DIR=/app/data
+APP_CONFIG_FILE=/app/data/config.json
+KB_DATA_DIR=/app/data/kb
+
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=APIxxxxxxxxxxxxxxxx
+LIVEKIT_API_SECRET=your_livekit_api_secret_here
+LIVEKIT_AGENT_NAME=vobiz-demo-agent
+
+GOOGLE_API_KEY=your_google_api_key
+
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_KEY=your_supabase_anon_key_here
 ```
 
-For this inbound Vobiz setup, do not worry about adding a Vobiz `SIP_TRUNK_ID`.
+For outbound calls, also fill:
 
-If you use this branch's outbound LiveKit dispatch features later, then follow the backend docs for `SIP_TRUNK_ID`. That is separate from receiving inbound calls from Vobiz.
+```env
+SIP_TRUNK_ID=ST_xxxxxxxxxxxxxxxx
+VOBIZ_SIP_DOMAIN=your_sip_domain.sip.vobiz.ai
+VOBIZ_USERNAME=your_vobiz_sip_username
+VOBIZ_PASSWORD=your_vobiz_sip_password
+VOBIZ_OUTBOUND_NUMBER=+91XXXXXXXXXX
+```
 
-## Step 5: Install Backend Requirements
+For transfer, also fill:
 
-Create a virtual environment:
+```env
+DEFAULT_TRANSFER_NUMBER=+91XXXXXXXXXX
+```
+
+## Step 7: Install The Backend Locally
+
+Run these commands in PowerShell:
 
 ```powershell
 python -m venv .venv
-```
-
-Activate it:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
-```
-
-Install the Python packages:
-
-```powershell
 pip install -r requirements.txt
 ```
 
-## Step 6: Set Up Supabase
-
-Open Supabase SQL editor and run these files in order:
-
-1. `sql/supabase/setup.sql`
-2. `sql/supabase/migration_v2.sql`
-3. `sql/supabase/migration_v3.sql`
-4. `sql/supabase/migration_v4_voice_metrics.sql`
-5. `sql/supabase/migration_v5_kb.sql`
-
-If you are upgrading from an older dashboard or WhatsApp branch, also run:
-
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
-
-## Step 7: Start The Backend
+## Step 8: Start The Backend Locally
 
 Run:
 
@@ -206,222 +502,242 @@ python start_stack.py
 
 This starts:
 
-- the backend API at `http://127.0.0.1:8000`
-- the LiveKit worker health server at `http://127.0.0.1:8081`
-- the knowledge base worker in the background
+- backend API at `http://127.0.0.1:8000`
+- LiveKit agent worker health server at `http://127.0.0.1:8081`
+- knowledge base worker
 
-## Step 8: Check That The Backend Works
-
-Open this in your browser:
+Check the backend:
 
 ```text
 http://127.0.0.1:8000/health
 ```
 
-You should see:
-
-```text
-ok
-```
-
-Also check:
+Check the API contract:
 
 ```text
 http://127.0.0.1:8000/openapi.json
 ```
 
-If that opens, the frontend builder can read the backend API contract.
+## Step 9: Test Inbound
 
-## Step 9: Build The Frontend With The Prompt
+1. Keep `python start_stack.py` running.
+2. Call your Vobiz phone number.
+3. Watch the backend terminal.
+4. You should see LiveKit and agent logs.
+5. The agent should answer.
+6. After the call, check call logs from the API or frontend.
 
-This is the part people must not miss.
+If inbound does not work, check:
 
-The frontend is not already built inside this repo. The frontend must be generated by using the prompt file:
+1. Vobiz number is attached to the inbound trunk.
+2. Vobiz inbound destination is your LiveKit SIP domain.
+3. LiveKit inbound trunk exists.
+4. LiveKit dispatch rule points to `vobiz-demo-agent`.
+5. Backend worker is running.
+6. `LIVEKIT_AGENT_NAME=vobiz-demo-agent` is in `.env`.
+
+## Step 10: Test Outbound
+
+Keep the backend running.
+
+In a second terminal:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python make_call.py --to +91XXXXXXXXXX --name Test
+```
+
+The phone should ring.
+
+If outbound does not work, check:
+
+1. `SIP_TRUNK_ID` is the LiveKit outbound trunk ID.
+2. `VOBIZ_SIP_DOMAIN` is correct.
+3. `VOBIZ_USERNAME` is correct.
+4. `VOBIZ_PASSWORD` is correct.
+5. `VOBIZ_OUTBOUND_NUMBER` is approved in Vobiz.
+6. The LiveKit outbound trunk uses those Vobiz credentials.
+7. The agent worker name is `vobiz-demo-agent`.
+
+## Step 11: Deploy Backend On Coolify
+
+In Coolify:
+
+1. New Resource.
+2. Application.
+3. Select this Git repo.
+4. Build pack: `Dockerfile`.
+5. Dockerfile path: `Dockerfile`.
+6. Public port: `8000`.
+7. Health check path: `/health`.
+8. Add persistent storage:
 
 ```text
-docs/ui-agent-prompt.md
+/app/data
 ```
+
+9. Add the same env values from `.env`.
+10. Deploy.
+
+Open:
+
+```text
+https://your-backend-domain.com/health
+```
+
+Expected result:
+
+```json
+{"status":"ok"}
+```
+
+Use only port `8000` for the backend. Port `8081` is internal agent health.
+
+Full Coolify notes:
+
+```text
+docs/deployment/coolify.md
+```
+
+## Step 12: Build The Frontend
+
+The frontend is built by a coding agent.
 
 Do this:
 
 1. Open `docs/ui-agent-prompt.md`.
-2. Copy the entire prompt.
-3. Open your coding agent.
-4. Paste the entire prompt.
-5. Add this extra sentence at the top:
+2. Copy the whole prompt.
+3. Paste it into a coding agent.
+4. Add this line at the top:
 
 ```text
 Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.
 ```
 
-6. Tell the coding agent where the backend is running:
+5. Tell it:
 
 ```text
-The backend API is running at http://127.0.0.1:8000
+Use Vite + React + TypeScript + Tailwind CSS.
+Use port 5173.
+Use VITE_API_BASE_URL for the backend URL.
 ```
 
-7. Tell the coding agent to inspect these files before building:
-
-```text
-openapi.json
-docs/backend-contract.md
-config.example.json
-backend_api.py
-```
-
-8. Tell it to create a separate frontend app, usually with:
-
-```text
-Vite + React + TypeScript + Tailwind CSS
-```
-
-or:
-
-```text
-Next.js + TypeScript + Tailwind CSS
-```
-
-9. Make sure the generated frontend has an environment variable for the backend URL.
-
-Example frontend `.env`:
+Local frontend `.env`:
 
 ```env
 VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-or for Next.js:
+Coolify frontend `.env`:
 
 ```env
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+VITE_API_BASE_URL=https://your-backend-domain.com
 ```
 
-10. After the frontend is created, run the frontend install command.
-
-Usually:
+Run frontend locally:
 
 ```powershell
 npm install
-```
-
-11. Start the frontend.
-
-Usually:
-
-```powershell
 npm run dev
 ```
 
-12. Open the frontend URL shown in the terminal.
-
-It is usually one of these:
+Open:
 
 ```text
 http://127.0.0.1:5173
-http://localhost:5173
-http://127.0.0.1:3000
-http://localhost:3000
 ```
 
-## What The Frontend Must Include
+## Step 13: Deploy Frontend On Coolify
 
-The prompt tells the coding agent to build a real dashboard, not a fake mockup.
+Create a second Coolify app for the frontend.
 
-The frontend should include:
-
-- Overview page
-- Configuration page
-- Call logs page
-- Transcript preview and download
-- Contacts page
-- Appointments page
-- Knowledge base page
-- File upload for knowledge base
-- Knowledge base search
-- LeadRat integration controls
-- Outbound call page, if using the backend outbound endpoints
-- Loading states
-- Empty states
-- Error messages
-- Save buttons
-- Confirm dialogs for delete or cancel actions
-- A reusable API client
-- A frontend `.env.example`
-- A frontend README
-
-If the coding agent only gives an explanation, it did not do the job. Tell it:
+Use these settings:
 
 ```text
-You must implement the actual frontend files. Do not stop at instructions.
+Install command: npm ci
+Build command: npm run build
+Start command: npm run preview -- --host 0.0.0.0 --port 5173
+Public port: 5173
 ```
 
-## Simple Frontend Builder Checklist
+Set:
 
-Use this checklist after the coding agent finishes:
-
-- Can I run `npm install`?
-- Can I run `npm run dev`?
-- Does the frontend open in the browser?
-- Does the frontend point to `http://127.0.0.1:8000`?
-- Does `/health` work on the backend?
-- Does the frontend load real data from the backend?
-- Can I edit and save config?
-- Can I see call logs?
-- Can I open transcripts?
-- Can I see appointments?
-- Can I use the knowledge base pages?
-- Are errors shown clearly instead of silently failing?
-
-## If Inbound Calls Do Not Reach The Agent
-
-Check these in order:
-
-1. The backend is running.
-2. `http://127.0.0.1:8000/health` returns `ok`.
-3. The worker is running as `inbound-voice-agent`.
-4. Your LiveKit SIP setup is active.
-5. The Vobiz trunk destination is your LiveKit SIP domain.
-6. The Vobiz trunk direction allows inbound calls.
-7. Your Vobiz number is attached to the correct trunk.
-8. You saved the correct `trunk_id` and `trunk_domain`.
-
-## If The Frontend Does Not Work
-
-Check these in order:
-
-1. The backend is running.
-2. The frontend `.env` points to the backend URL.
-3. The frontend was restarted after changing `.env`.
-4. `http://127.0.0.1:8000/openapi.json` opens in the browser.
-5. The browser console has no API base URL errors.
-6. The coding agent used `docs/ui-agent-prompt.md`.
-7. The coding agent built real files instead of only writing advice.
-
-## Short Version
-
-Backend:
-
-```powershell
-Copy-Item .env.example .env
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python start_stack.py
+```env
+VITE_API_BASE_URL=https://your-backend-domain.com
 ```
+
+## Final Checklist
+
+Supabase:
+
+- SQL files ran in order.
+- `SUPABASE_URL` is set.
+- `SUPABASE_KEY` is set.
+
+LiveKit:
+
+- `LIVEKIT_URL` is set.
+- `LIVEKIT_API_KEY` is set.
+- `LIVEKIT_API_SECRET` is set.
+- Inbound trunk exists.
+- Dispatch rule sends calls to `vobiz-demo-agent`.
+- Outbound trunk exists if you need outbound calls.
+- `SIP_TRUNK_ID` is the outbound trunk ID.
 
 Vobiz:
 
-```text
-Point inbound_destination to your LiveKit SIP domain.
-```
+- Inbound trunk points to LiveKit SIP domain.
+- Phone number is attached to inbound trunk.
+- Outbound trunk allows calls if you need outbound.
+- Vobiz SIP username/password/domain are saved.
+
+Backend:
+
+- `.env` is filled.
+- `python start_stack.py` runs.
+- `/health` returns ok.
+- `/openapi.json` opens.
 
 Frontend:
 
-```text
-Copy everything in docs/ui-agent-prompt.md.
-Paste it into a coding agent.
-Tell the agent to build the actual frontend now.
-Set the frontend API URL to http://127.0.0.1:8000.
-Run npm install.
-Run npm run dev.
-Open the frontend in your browser.
-```
+- Built with Vite.
+- Runs on port `5173`.
+- `VITE_API_BASE_URL` points to backend.
+
+Coolify:
+
+- Backend public port is `8000`.
+- Backend health path is `/health`.
+- Backend storage is `/app/data`.
+- Frontend public port is `5173`.
+
+## Tiny Troubleshooting
+
+Backend 502 on Coolify:
+
+- Public port must be `8000`.
+- Health path must be `/health`.
+
+Inbound call does not reach agent:
+
+- Vobiz inbound destination must be the LiveKit SIP domain.
+- LiveKit dispatch rule must point to `vobiz-demo-agent`.
+- Backend must be running.
+
+Outbound call fails:
+
+- `SIP_TRUNK_ID` must be the LiveKit outbound trunk ID.
+- Vobiz SIP username/password must be correct.
+- Run `python setup_trunk.py`.
+
+Transfer fails:
+
+- `VOBIZ_SIP_DOMAIN` must be set.
+- `DEFAULT_TRANSFER_NUMBER` must be set.
+- Vobiz must allow SIP REFER or call transfer.
+
+Frontend cannot load data:
+
+- `VITE_API_BASE_URL` must point to the backend.
+- Restart the frontend after changing `.env`.
+- Open backend `/health` first.

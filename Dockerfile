@@ -19,6 +19,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     supervisor \
     ca-certificates \
+    libgomp1 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /root/.local /root/.local
@@ -32,11 +34,13 @@ ENV PATH=/root/.local/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=8000 \
+    AGENT_HOST=0.0.0.0 \
+    AGENT_PORT=8081 \
     APP_DATA_DIR=/app/data \
     APP_CONFIG_FILE=/app/data/config.json \
     KB_DATA_DIR=/app/data/kb
 
-EXPOSE 8000 8081
+EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8000\")}/health', timeout=3)"
 
