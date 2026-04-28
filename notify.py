@@ -1,15 +1,13 @@
 import logging
 import os
-import re
 from datetime import datetime
 
-import httpx
 import requests
 
 logger = logging.getLogger("notify")
 
 
-def _env_or_config(config: dict | None, key: str, env_key: str, default=""):
+def _env_or_config(config: dict | None, key: str, env_key: str, default: str = ""):
     config = config or {}
     value = config.get(key)
     if value not in (None, ""):
@@ -19,6 +17,7 @@ def _env_or_config(config: dict | None, key: str, env_key: str, default=""):
 
 def normalize_phone_number(phone_number: str) -> str:
     import db as _db_module
+
     result = _db_module.normalize_phone_number(phone_number)
     if not result:
         raise ValueError("Phone number must start with + and country code")
@@ -26,11 +25,28 @@ def normalize_phone_number(phone_number: str) -> str:
 
 
 def _get_telegram_config(config: dict | None = None) -> tuple[str, str, str]:
-    token = _env_or_config(config, "telegram_bot_token", "TELEGRAM_BOT_TOKEN", "")
-    chat_id = _env_or_config(config, "telegram_chat_id", "TELEGRAM_CHAT_ID", "")
+    token = str(_env_or_config(config, "telegram_bot_token", "TELEGRAM_BOT_TOKEN", "")).strip()
+    chat_id = str(_env_or_config(config, "telegram_chat_id", "TELEGRAM_CHAT_ID", "")).strip()
     url = f"https://api.telegram.org/bot{token}/sendMessage" if token else ""
-    return str(token), str(chat_id), url
+    return token, chat_id, url
 
+
+def send_telegram(message: str, *, config: dict | None = None) -> bool:
+    token, chat_id, telegram_url = _get_telegram_config(config)
+    if not token or not chat_id:
+        logger.warning("[TELEGRAM] Token or chat ID is not configured")
+        return False
+    try:
+        response = requests.post(
+            telegram_url,
+            json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.error("[TELEGRAM] Failed: %s", exc)
+        return False
 
 
 def notify_booking_confirmed(
@@ -109,24 +125,3 @@ def notify_agent_error(caller_phone: str, error: str, *, config: dict | None = N
         f"Error: `{error}`"
     )
     return send_telegram(message, config=config)
-
-
-async def send_webhook(webhook_url: str, event_type: str, payload: dict) -> bool:
-    if not webhook_url:
-        return False
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                webhook_url,
-                json={
-                    "event": event_type,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "data": payload,
-                },
-                headers={"Content-Type": "application/json"},
-            )
-            logger.info(f"[WEBHOOK] Delivered {event_type} -> {resp.status_code}")
-            return resp.status_code < 300
-    except Exception as exc:
-        logger.warning(f"[WEBHOOK] Failed to deliver {event_type}: {exc}")
-        return False

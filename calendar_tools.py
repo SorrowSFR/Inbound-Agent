@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 import pytz
 
-from automation import handle_appointment_cancelled, handle_booking_confirmed
+from backend_events import handle_appointment_cancelled, handle_booking_confirmed
 from db import (
     AppointmentConflictError,
     AppointmentError,

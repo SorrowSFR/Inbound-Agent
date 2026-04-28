@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(gunzip -c \"C:\\\\Users\\\\alpha\\\\.claude\\\\projects\\\\C--Users-alpha-OneDrive-Desktop-SPXAgent\\\\9b2d78bd-f108-42ec-a06e-d3330253cb93\\\\tool-results\\\\webfetch-1776964638060-333rfi.bin\")",
+      "Bash(tar -t)",
+      "Bash(tar -x -C /tmp/voice-agent-design)"
+    ]
+  }
+}

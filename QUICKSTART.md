@@ -1,50 +1,69 @@
-# Quick Start
+# Quickstart
 
-If you want the full A-to-Z guide, read [README.md](/c:/Users/alpha/OneDrive/Documents/SPXAgent/README.md).
+## 1. Environment
 
-## Minimum Setup
+Create `.env` from `.env.example` and fill in at least:
 
-1. Copy `.env.example` to `.env`.
-2. Put in:
+- `LIVEKIT_URL`
+- `LIVEKIT_API_KEY`
+- `LIVEKIT_API_SECRET`
+- `SIP_TRUNK_ID`
+- `GOOGLE_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
 
-```env
-GOOGLE_API_KEY=your_gemini_api_key
-LIVEKIT_URL=wss://your-project.livekit.cloud
-LIVEKIT_API_KEY=your_livekit_api_key
-LIVEKIT_API_SECRET=your_livekit_api_secret
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_key
-WHATSAPP_ENABLED=false
-```
+Optional but useful:
 
-3. Run the Supabase schema from [sql/supabase/setup.sql](/c:/Users/alpha/OneDrive/Documents/SPXAgent/sql/supabase/setup.sql).
-4. In LiveKit, create:
-   - one inbound SIP trunk
-   - one SIP dispatch rule that dispatches `inbound-voice-agent`
-5. In Vobiz, create a SIP trunk with:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `SUPABASE_S3_ACCESS_KEY`
+- `SUPABASE_S3_SECRET_KEY`
+- `SUPABASE_S3_ENDPOINT`
 
-```text
-inbound_destination = your-project.sip.livekit.cloud
-```
+## 2. Config
 
-6. Install:
+Seed a config file if you want explicit defaults:
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+cp config.example.json config.json
 ```
 
-7. Start:
+The backend-only config contract is Gemini-first and lives in `backend_config.py`.
+
+## 3. Database
+
+Run these SQL files in Supabase:
+
+1. `sql/supabase/setup.sql`
+2. `sql/supabase/migration_v2.sql`
+3. `sql/supabase/migration_v3.sql`
+4. `sql/supabase/migration_v4_voice_metrics.sql`
+5. `sql/supabase/migration_v5_kb.sql`
+
+If you are upgrading from the old WhatsApp/dashboard branch, also run:
+
+6. `sql/supabase/migration_v6_backend_cleanup.sql`
+
+## 4. Start
 
 ```bash
 python start_stack.py
 ```
 
-8. Open:
+Or start components individually:
 
-```text
-http://127.0.0.1:8000
+```bash
+uvicorn backend_api:app --host 0.0.0.0 --port 8000
+python agent.py start
+python kb_worker.py
 ```
 
-Video walkthrough: coming soon. Add your GitHub/YouTube link in [README.md](/c:/Users/alpha/OneDrive/Documents/SPXAgent/README.md) when it is ready.
+## 5. Verify
+
+- `GET /health`
+- `GET /openapi.json`
+- `GET /api/config`
+
+## 6. Build a UI separately
+
+Use [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md) with any coding agent to generate a frontend against this backend.
