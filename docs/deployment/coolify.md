@@ -66,18 +66,11 @@ If Coolify gives you a public URL automatically, the backend can also read commo
 
 ## Supabase SQL
 
-Run these once in Supabase, in order:
+Run one file in Supabase SQL Editor:
 
 1. `sql/supabase/setup.sql`
-2. `sql/supabase/migration_v2.sql`
-3. `sql/supabase/migration_v3.sql`
-4. `sql/supabase/migration_v4_voice_metrics.sql`
-5. `sql/supabase/migration_v5_kb.sql`
 
-For an existing deployment, also run:
-
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
-7. `sql/supabase/migration_v7_kb_demo_sources.sql`
+The file is safe to re-run and covers fresh installs, upgrades, and cleanup from older backend branches.
 
 ## Verify
 
@@ -98,6 +91,14 @@ Then check:
 ```text
 https://your-backend-domain.com/openapi.json
 ```
+
+Then verify Supabase setup:
+
+```text
+https://your-backend-domain.com/api/setup/status
+```
+
+Expected `status` is `ok`. If it returns `not_configured` or `setup_required`, fix the env values or rerun `sql/supabase/setup.sql`.
 
 ## Frontend App
 

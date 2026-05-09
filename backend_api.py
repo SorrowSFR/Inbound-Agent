@@ -180,6 +180,14 @@ async def api_post_config(request: Request):
     return {"status": "ok", "config": updated}
 
 
+@app.get("/api/setup/status")
+async def api_setup_status():
+    _load_runtime_config()
+    import db
+
+    return db.check_supabase_setup()
+
+
 @app.get("/api/logs")
 async def api_get_logs():
     _load_runtime_config()

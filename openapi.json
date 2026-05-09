@@ -36,6 +36,22 @@
         }
       }
     },
+    "/api/setup/status": {
+      "get": {
+        "summary": "Api Setup Status",
+        "operationId": "api_setup_status_api_setup_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs": {
       "get": {
         "summary": "Api Get Logs",

@@ -14,7 +14,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 - `GET /api/logs/{log_id}/transcript` returns `text/plain`, not JSON.
 - Most write endpoints return a wrapper like `{ "status": "ok", ... }`.
 - Most error payloads look like `{ "status": "error", "message": "..." }`.
-- KB endpoints may also return `status: "setup_required"` or `status: "not_configured"` when local or Supabase prerequisites are missing.
+- Setup and KB endpoints may return `status: "setup_required"` or `status: "not_configured"` when local or Supabase prerequisites are missing.
 
 ## Retained HTTP Surface
 
@@ -24,6 +24,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 - `GET /openapi.json`
 - `GET /api/config`
 - `POST /api/config`
+- `GET /api/setup/status`
 
 ### Calls and reporting
 
@@ -120,6 +121,25 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 ```
 
 For the canonical config example, also inspect `config.example.json`.
+
+### Setup status
+
+`GET /api/setup/status` checks Supabase env and required table reachability.
+
+```json
+{
+  "status": "ok",
+  "message": "Supabase is configured and the required tables are reachable.",
+  "missing_env": [],
+  "missing_tables": [],
+  "schema_file": "sql/supabase/setup.sql",
+  "tables": {
+    "call_logs": { "ok": true }
+  }
+}
+```
+
+`status` can be `ok`, `not_configured`, `setup_required`, or `error`.
 
 ### Call log rows
 

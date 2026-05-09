@@ -108,7 +108,7 @@ Build the app around these primary sections:
 - recent call activity
 - recent appointments
 - KB status summary
-- visible system health indicators where appropriate
+- visible system health indicators from `/health` and `/api/setup/status` where appropriate
 
 2. Configuration
 - editable backend config form backed by `GET /api/config` and `POST /api/config`
@@ -164,7 +164,7 @@ Build the app around these primary sections:
 - Default live model is `gemini-3.1-flash-live-preview`.
 - Gemini TTS fallback behavior exists inside the backend only; the UI should not try to emulate runtime voice behavior.
 - The transcript endpoint returns plain text, not a JSON transcript object.
-- The backend may return `status: "setup_required"` or `status: "not_configured"` for KB-related operations; handle these gracefully in the UI.
+- The backend may return `status: "setup_required"` or `status: "not_configured"` for setup or KB-related operations; handle these gracefully in the UI.
 - The backend does not ship auth in this branch.
 
 ## Implementation Requirements

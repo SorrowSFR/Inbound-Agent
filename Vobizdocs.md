@@ -109,24 +109,8 @@ Now create the database tables.
 3. Copy the whole file.
 4. Paste it into Supabase SQL Editor.
 5. Click Run.
-6. Repeat for every file below, in this exact order:
 
-```text
-1. sql/supabase/setup.sql
-2. sql/supabase/migration_v2.sql
-3. sql/supabase/migration_v3.sql
-4. sql/supabase/migration_v4_voice_metrics.sql
-5. sql/supabase/migration_v5_kb.sql
-```
-
-If this is an old deployment, also run:
-
-```text
-6. sql/supabase/migration_v6_backend_cleanup.sql
-7. sql/supabase/migration_v7_kb_demo_sources.sql
-```
-
-Supabase is done when the SQL files run without errors.
+Supabase is done when `sql/supabase/setup.sql` runs without errors. The one file handles fresh installs, upgrades, storage buckets, and cleanup from older backend branches.
 
 ## Step 2: Create The LiveKit Project
 
@@ -518,6 +502,12 @@ Check the API contract:
 http://127.0.0.1:8000/openapi.json
 ```
 
+Check Supabase setup:
+
+```text
+http://127.0.0.1:8000/api/setup/status
+```
+
 ## Step 9: Test Inbound
 
 1. Keep `python start_stack.py` running.
@@ -670,9 +660,10 @@ VITE_API_BASE_URL=https://your-backend-domain.com
 
 Supabase:
 
-- SQL files ran in order.
+- `sql/supabase/setup.sql` ran successfully.
 - `SUPABASE_URL` is set.
 - `SUPABASE_KEY` is set.
+- `/api/setup/status` returns ok.
 
 LiveKit:
 
@@ -696,6 +687,7 @@ Backend:
 - `.env` is filled.
 - `python start_stack.py` runs.
 - `/health` returns ok.
+- `/api/setup/status` returns ok.
 - `/openapi.json` opens.
 
 Frontend:
@@ -741,3 +733,4 @@ Frontend cannot load data:
 - `VITE_API_BASE_URL` must point to the backend.
 - Restart the frontend after changing `.env`.
 - Open backend `/health` first.
+- Open backend `/api/setup/status` next.

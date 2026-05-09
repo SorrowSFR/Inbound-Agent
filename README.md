@@ -38,18 +38,11 @@ Services started by this branch:
 
 ## Supabase
 
-Fresh installs should run these SQL files in order:
+Run one SQL file in Supabase SQL Editor:
 
 1. `sql/supabase/setup.sql`
-2. `sql/supabase/migration_v2.sql`
-3. `sql/supabase/migration_v3.sql`
-4. `sql/supabase/migration_v4_voice_metrics.sql`
-5. `sql/supabase/migration_v5_kb.sql`
 
-Existing legacy deployments should also run:
-
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
-7. `sql/supabase/migration_v7_kb_demo_sources.sql`
+That file is safe to re-run and covers the call tables, appointment planner, voice metrics, KB tables, storage buckets, and legacy cleanup.
 
 ## API and UI handoff
 
@@ -62,12 +55,13 @@ To build the frontend:
 
 1. Start this backend.
 2. Verify `http://127.0.0.1:8000/health` returns `ok`.
-3. Open [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md).
-4. Copy the entire prompt.
-5. Paste it into a coding agent.
-6. Add: `Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.`
-7. Tell it to build Vite + React + TypeScript + Tailwind CSS on port `5173`.
-8. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` for local development.
+3. Verify `http://127.0.0.1:8000/api/setup/status` returns `status: "ok"`.
+4. Open [docs/ui-agent-prompt.md](docs/ui-agent-prompt.md).
+5. Copy the entire prompt.
+6. Paste it into a coding agent.
+7. Add: `Use this prompt to build the actual frontend application now. Do not just explain the instructions. Create the files, install the packages, and make it runnable.`
+8. Tell it to build Vite + React + TypeScript + Tailwind CSS on port `5173`.
+9. Set `VITE_API_BASE_URL=http://127.0.0.1:8000` for local development.
 
 ## Coolify
 

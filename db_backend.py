@@ -33,6 +33,17 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 _MAX_RETRIES = 3
 _RETRY_DELAYS = [1.0, 2.0, 4.0]
+_REQUIRED_SUPABASE_TABLES = (
+    "call_logs",
+    "call_transcripts",
+    "active_calls",
+    "appointments",
+    "call_turn_metrics",
+    "kb_sources",
+    "kb_documents",
+    "kb_chunks",
+    "kb_ingest_jobs",
+)
 
 
 class AppointmentError(Exception):
@@ -67,7 +78,7 @@ def _extract_missing_column(err_str: str) -> str | None:
 
 
 def _missing_appointments_table_message() -> str:
-    return "Appointments table is missing. Run sql/supabase/migration_v3.sql in Supabase."
+    return "Appointments table is missing. Run sql/supabase/setup.sql in Supabase."
 
 
 def _parse_iso_datetime(value: str | datetime) -> datetime:
@@ -164,8 +175,8 @@ def _normalize_appointment_payload(
 
 
 def get_supabase() -> Client | None:
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
+    url = str(os.environ.get("SUPABASE_URL", "") or "").strip()
+    key = str(os.environ.get("SUPABASE_KEY", "") or "").strip()
     if not url or not key:
         return None
 
@@ -180,6 +191,60 @@ def get_supabase() -> Client | None:
     except Exception as exc:
         logger.error(f"Failed to init Supabase client: {exc}")
         return None
+
+
+def check_supabase_setup() -> dict[str, Any]:
+    url = str(os.environ.get("SUPABASE_URL", "") or "").strip()
+    key = str(os.environ.get("SUPABASE_KEY", "") or "").strip()
+    missing_env = [name for name, value in (("SUPABASE_URL", url), ("SUPABASE_KEY", key)) if not value]
+    if missing_env:
+        return {
+            "status": "not_configured",
+            "message": "Set SUPABASE_URL and SUPABASE_KEY, then run sql/supabase/setup.sql once.",
+            "missing_env": missing_env,
+            "missing_tables": [],
+            "schema_file": "sql/supabase/setup.sql",
+            "tables": {},
+        }
+
+    supabase = get_supabase()
+    if not supabase:
+        return {
+            "status": "error",
+            "message": "Supabase client could not be initialized. Check the URL and key.",
+            "missing_env": [],
+            "missing_tables": [],
+            "schema_file": "sql/supabase/setup.sql",
+            "tables": {},
+        }
+
+    tables: dict[str, dict[str, Any]] = {}
+    for table_name in _REQUIRED_SUPABASE_TABLES:
+        try:
+            supabase.table(table_name).select("*").limit(1).execute()
+            tables[table_name] = {"ok": True}
+        except Exception as exc:
+            tables[table_name] = {"ok": False, "message": str(exc)}
+
+    missing_tables = [name for name, result in tables.items() if not result.get("ok")]
+    if missing_tables:
+        return {
+            "status": "setup_required",
+            "message": "Run sql/supabase/setup.sql in the Supabase SQL Editor.",
+            "missing_env": [],
+            "missing_tables": missing_tables,
+            "schema_file": "sql/supabase/setup.sql",
+            "tables": tables,
+        }
+
+    return {
+        "status": "ok",
+        "message": "Supabase is configured and the required tables are reachable.",
+        "missing_env": [],
+        "missing_tables": [],
+        "schema_file": "sql/supabase/setup.sql",
+        "tables": tables,
+    }
 
 
 def normalize_phone_number(phone_number: str | None) -> str:
@@ -222,7 +287,7 @@ def save_call_log(
 ) -> dict:
     supabase = get_supabase()
     if not supabase:
-        logger.info(f"Supabase not configured. Local log -> {phone} {duration}s")
+        logger.warning("Supabase not configured; call log was not saved -> %s %ss", phone, duration)
         return {"success": False, "message": "Supabase not configured"}
 
     full_data: dict[str, Any] = {
@@ -564,7 +629,7 @@ def save_call_turn_metric(payload: dict[str, Any]) -> dict[str, Any] | None:
         return rows[0] if rows else row
     except Exception as exc:
         if _is_schema_error(str(exc)):
-            logger.warning("call_turn_metrics table is missing. Run sql/supabase/migration_v4_voice_metrics.sql.")
+            logger.warning("call_turn_metrics table is missing. Run sql/supabase/setup.sql.")
             return None
         logger.error(f"Failed to save call turn metric: {exc}")
         return None
