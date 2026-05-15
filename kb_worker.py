@@ -47,12 +47,6 @@ async def main() -> None:
         runtime = kb.get_runtime_config(config)
         poll_seconds = runtime["kb_worker_poll_seconds"]
         try:
-            queued = kb.maybe_sync_leadrat(config)
-            if queued:
-                logger.info(f"[KB] Scheduled Lead RRat sync job {queued.get('id')}")
-        except Exception as exc:
-            logger.error(f"[KB] Lead RRat schedule check failed: {exc}")
-        try:
             processed = kb.process_pending_jobs(config, limit=5)
             if processed:
                 logger.info(f"[KB] Processed {len(processed)} KB jobs")

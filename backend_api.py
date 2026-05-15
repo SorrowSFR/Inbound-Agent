@@ -181,6 +181,14 @@ async def api_post_config(request: Request):
     return {"status": "ok", "config": redact_config(updated)}
 
 
+@app.get("/api/setup/status")
+async def api_setup_status():
+    _load_runtime_config()
+    import db
+
+    return db.check_supabase_setup()
+
+
 @app.get("/api/logs")
 async def api_get_logs():
     _load_runtime_config()
@@ -531,7 +539,7 @@ async def api_kb_sync_source(source_id: str):
         job = kb.queue_job(
             source_id=source_id,
             source_type=source.get("source_type") or "generic",
-            job_type="sync" if source.get("source_type") == "leadrat_crm" else "ingest",
+            job_type="ingest",
             payload={},
             config=config,
         )
@@ -621,69 +629,6 @@ async def api_kb_search(request: Request):
         if issue.get("status") in {"setup_required", "not_configured"}:
             return JSONResponse({"status": issue["status"], "message": issue["message"]}, status_code=400)
         logger.error(f"KB search failed: {exc}")
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
-
-
-@app.get("/api/kb/inventory/search")
-async def api_kb_inventory_search(query: str):
-    config = _load_runtime_config()
-    import kb
-
-    try:
-        return {"status": "ok", "items": kb.search_inventory(query, config=config)}
-    except Exception as exc:
-        issue = kb.kb_runtime_issue_payload(exc, config=config)
-        if issue.get("status") in {"setup_required", "not_configured"}:
-            return JSONResponse({"status": issue["status"], "message": issue["message"]}, status_code=400)
-        logger.error(f"KB inventory search failed: {exc}")
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
-
-
-@app.get("/api/kb/integrations/leadrat/status")
-async def api_kb_leadrat_status():
-    config = _load_runtime_config()
-    import kb
-
-    try:
-        status = kb.get_status(config)
-        leadrat = status.get("leadrat") or {}
-        if status.get("status") in {"setup_required", "not_configured"}:
-            return {"status": status.get("status"), "integration": leadrat, "message": status.get("message")}
-        return {"status": "ok", "integration": leadrat}
-    except Exception as exc:
-        logger.error(f"LeadRat status failed: {exc}")
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
-
-
-@app.post("/api/kb/integrations/leadrat/connect")
-async def api_kb_leadrat_connect():
-    config = _load_runtime_config()
-    import kb
-
-    try:
-        result = await asyncio.to_thread(kb.validate_leadrat_connection, config)
-        return {"status": "ok", "result": result}
-    except Exception as exc:
-        issue = kb.kb_runtime_issue_payload(exc, config=config)
-        if issue.get("status") in {"setup_required", "not_configured"}:
-            return JSONResponse({"status": issue["status"], "message": issue["message"]}, status_code=400)
-        logger.error(f"LeadRat connection failed: {exc}")
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
-
-
-@app.post("/api/kb/integrations/leadrat/sync")
-async def api_kb_leadrat_sync():
-    config = _load_runtime_config()
-    import kb
-
-    try:
-        result = await asyncio.to_thread(kb.sync_leadrat_source, config)
-        return {"status": "ok", "result": result}
-    except Exception as exc:
-        issue = kb.kb_runtime_issue_payload(exc, config=config)
-        if issue.get("status") in {"setup_required", "not_configured"}:
-            return JSONResponse({"status": issue["status"], "message": issue["message"]}, status_code=400)
-        logger.error(f"LeadRat sync failed: {exc}")
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
 
 

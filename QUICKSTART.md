@@ -32,17 +32,11 @@ The backend-only config contract is Gemini-first and lives in `backend_config.py
 
 ## 3. Database
 
-Run these SQL files in Supabase:
+Run one SQL file in Supabase SQL Editor:
 
 1. `sql/supabase/setup.sql`
-2. `sql/supabase/migration_v2.sql`
-3. `sql/supabase/migration_v3.sql`
-4. `sql/supabase/migration_v4_voice_metrics.sql`
-5. `sql/supabase/migration_v5_kb.sql`
 
-If you are upgrading from the old WhatsApp/dashboard branch, also run:
-
-6. `sql/supabase/migration_v6_backend_cleanup.sql`
+This single file creates or upgrades the call logs, transcripts, active calls, appointments, voice metrics, KB tables, storage buckets, and legacy cleanup.
 
 ## 4. Start
 
@@ -61,10 +55,23 @@ python kb_worker.py
 ## 5. Verify
 
 - `GET /health`
+- `GET /api/setup/status`
 - `GET /openapi.json`
 - `GET /api/config`
 
-## 6. Build a UI separately
+## 6. Coolify
+
+Use the repo `Dockerfile`.
+
+Set:
+
+- public port: `8000`
+- health check path: `/health`
+- persistent storage: `/app/data`
+
+Full steps: [docs/deployment/coolify.md](docs/deployment/coolify.md)
+
+## 7. Build a UI separately
 
 This repo does not include a finished frontend. The frontend must be built separately.
 
@@ -93,13 +100,9 @@ http://127.0.0.1:8000
 VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-or:
+7. Tell the agent to use Vite on port `5173`.
 
-```env
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-```
-
-7. In the generated frontend folder, run:
+8. In the generated frontend folder, run:
 
 ```bash
 npm install

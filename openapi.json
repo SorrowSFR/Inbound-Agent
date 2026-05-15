@@ -36,6 +36,22 @@
         }
       }
     },
+    "/api/setup/status": {
+      "get": {
+        "summary": "Api Setup Status",
+        "operationId": "api_setup_status_api_setup_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs": {
       "get": {
         "summary": "Api Get Logs",
@@ -480,91 +496,6 @@
       "post": {
         "summary": "Api Kb Search",
         "operationId": "api_kb_search_api_kb_search_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/inventory/search": {
-      "get": {
-        "summary": "Api Kb Inventory Search",
-        "operationId": "api_kb_inventory_search_api_kb_inventory_search_get",
-        "parameters": [
-          {
-            "name": "query",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Query"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/integrations/leadrat/status": {
-      "get": {
-        "summary": "Api Kb Leadrat Status",
-        "operationId": "api_kb_leadrat_status_api_kb_integrations_leadrat_status_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/integrations/leadrat/connect": {
-      "post": {
-        "summary": "Api Kb Leadrat Connect",
-        "operationId": "api_kb_leadrat_connect_api_kb_integrations_leadrat_connect_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/kb/integrations/leadrat/sync": {
-      "post": {
-        "summary": "Api Kb Leadrat Sync",
-        "operationId": "api_kb_leadrat_sync_api_kb_integrations_leadrat_sync_post",
         "responses": {
           "200": {
             "description": "Successful Response",

@@ -111,7 +111,7 @@ from calendar_tools import async_create_booking, get_available_slots
 from runtime_env import get_app_data_dir
 
 DEFAULT_GEMINI_TTS_SAMPLE_RATE = 24000
-DEFAULT_AGENT_NAME = "outbound-caller"
+DEFAULT_AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "vobiz-demo-agent").strip() or "vobiz-demo-agent"
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _call_timestamps: dict[str, list[float]] = defaultdict(list)
@@ -763,31 +763,7 @@ class AgentTools(llm.ToolContext):
         finally:
             self._record_tool_time(started_at)
 
-    @llm.function_tool(description="Search the live property inventory for confirmed facts such as price, BHK, locality, possession, status, or amenities.")
-    async def search_inventory(self, query: Annotated[str, "Inventory question in natural language"]) -> str:
-        started_at = time.monotonic()
-        try:
-            results = await asyncio.to_thread(
-                kb.search_inventory,
-                query,
-                limit=max(1, parse_int(self.live_config.get("kb_inventory_top_k"), 3)),
-                config=self.live_config,
-            )
-            if not results:
-                return "I do not have a confirmed inventory match for that yet."
-            lines = []
-            for index, item in enumerate(results[:3], start=1):
-                fact_block = str(item.get("fact_block") or "").strip()
-                if fact_block:
-                    lines.append(f"{index}. {fact_block}")
-            return "\n".join(lines) if lines else "I do not have a confirmed inventory match for that yet."
-        except Exception as exc:
-            logger.error("[TOOL] search_inventory failed: %s", exc)
-            return "I am having trouble checking the live inventory right now."
-        finally:
-            self._record_tool_time(started_at)
-
-    @llm.function_tool(description="Search the knowledge base for brochure notes, PDF excerpts, website content, or CRM-grounded context.")
+    @llm.function_tool(description="Search the knowledge base for PDF excerpts and website content.")
     async def search_knowledge_base(self, query: Annotated[str, "Knowledge base question in natural language"]) -> str:
         started_at = time.monotonic()
         try:
@@ -825,7 +801,7 @@ class OutboundAssistant(Agent):
         if not base_instructions:
             base_instructions = (
                 "You are Aryan from SPX AI. Qualify the caller, answer with confirmed information, and help "
-                "them book a site visit or transfer to a human when needed."
+                "them book an appointment or transfer to a human when needed."
             )
 
         trusted_phone = bool(self._caller_profile.get("trusted_phone")) and bool(
@@ -855,9 +831,9 @@ class OutboundAssistant(Agent):
             + "\n\n[CALL POLICY]\n"
             + "This backend-only branch supports inbound and outbound phone calls only.\n"
             + "Do not promise WhatsApp messages, reminders, demo links, or follow-up automation.\n"
-            + "Use inventory and knowledge-base tools before guessing.\n"
+            + "Use the knowledge-base tool before guessing.\n"
             + "When facts are not confirmed, say so plainly.\n"
-            + "Default next steps are a site visit, a callback, or a human transfer."
+            + "Default next steps are an appointment, a callback, or a human transfer."
             + get_ist_time_context()
             + get_language_instruction(str(self._live_config.get('lang_preset') or 'multilingual'))
         )
@@ -1288,12 +1264,9 @@ async def entrypoint(ctx: JobContext) -> None:
         nonlocal interrupt_count
         interrupt_count += 1
 
-    @ctx.room.on("participant_disconnected")
-    def _on_participant_disconnected(participant) -> None:
-        del participant
-        asyncio.create_task(unified_shutdown_hook(ctx))
-
-    await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "active")
+    active_start_result = await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "active")
+    if active_start_result is None:
+        logger.warning("[CALL-LOG] Active call start was not saved for room %s", ctx.room.name)
 
     shutdown_guard = {"started": False}
     shutdown_lock = asyncio.Lock()
@@ -1304,103 +1277,132 @@ async def entrypoint(ctx: JobContext) -> None:
                 return
             shutdown_guard["started"] = True
 
-        await _flush_active_turn_metric(reason="call_ended")
+        try:
+            await _flush_active_turn_metric(reason="call_ended")
+        except Exception as exc:
+            logger.warning("[CALL-LOG] Failed to flush final turn metric: %s", exc)
+
         duration = int((datetime.now(timezone.utc) - call_start_time).total_seconds())
         booking_was_confirmed = False
-
-        transcript_text = ""
-        try:
-            messages = agent.chat_ctx.messages
-            if callable(messages):
-                messages = messages()
-            lines = []
-            for message in messages:
-                role = getattr(message, "role", None)
-                if role not in ("user", "assistant"):
-                    continue
-                content = getattr(message, "content", "")
-                if isinstance(content, list):
-                    content = " ".join(str(piece) for piece in content if isinstance(piece, str))
-                content = str(content or "").strip()
-                if content:
-                    lines.append(f"[{str(role).upper()}] {content}")
-            transcript_text = "\n".join(lines).strip()
-        except Exception:
-            transcript_text = ""
-        if not transcript_text:
-            rows = await asyncio.to_thread(db.list_call_transcripts, call_room_id=ctx.room.name, limit=500)
-            transcript_text = "\n".join(
-                f"[{str(row.get('role') or '').upper()}] {str(row.get('content') or '').strip()}"
-                for row in rows
-                if str(row.get("content") or "").strip()
-            ).strip()
-
         booking_status_msg = "No booking"
-        if agent_tools.booking_intent:
-            intent = agent_tools.booking_intent
-            result = await async_create_booking(
-                start_time=intent["start_time"],
-                caller_name=intent["caller_name"] or "Unknown Caller",
-                caller_phone=intent["caller_phone"],
-                notes=intent["notes"],
-            )
-            if result.get("success"):
-                booking_was_confirmed = True
-                booking_status_msg = f"Booking Confirmed: {result.get('booking_id')}"
-            else:
-                booking_status_msg = f"Booking Failed: {result.get('message')}"
-            agent_tools.booking_intent = None
-        else:
-            summary_text = transcript_text or "Caller did not schedule during this call."
-            handle_call_no_booking(
-                caller_name=agent_tools._effective_name(agent_tools.caller_name) or "Unknown Caller",
-                phone_number=agent_tools._effective_phone(agent_tools.caller_phone),
-                call_summary=summary_text[:1200],
-                related_call_room_id=ctx.room.name,
-                config=live_config,
-            )
+        transcript_text = ""
 
-        estimated_cost = estimate_gemini_live_cost_usd(duration)
-        call_dt = call_start_time.astimezone(_IST)
-
-        recording_url = ""
-        if egress_id:
+        try:
             try:
-                stop_api = api.LiveKitAPI(
-                    url=os.environ["LIVEKIT_URL"],
-                    api_key=os.environ["LIVEKIT_API_KEY"],
-                    api_secret=os.environ["LIVEKIT_API_SECRET"],
-                )
-                await stop_api.egress.stop_egress(api.StopEgressRequest(egress_id=egress_id))
-                await stop_api.aclose()
-                base_url = str(os.environ.get("SUPABASE_URL", "")).rstrip("/")
-                if base_url:
-                    recording_url = (
-                        f"{base_url}/storage/v1/object/public/call-recordings/recordings/{ctx.room.name}.ogg"
+                messages = agent.chat_ctx.messages
+                if callable(messages):
+                    messages = messages()
+                lines = []
+                for message in messages:
+                    role = getattr(message, "role", None)
+                    if role not in ("user", "assistant"):
+                        continue
+                    content = getattr(message, "content", "")
+                    if isinstance(content, list):
+                        content = " ".join(str(piece) for piece in content if isinstance(piece, str))
+                    content = str(content or "").strip()
+                    if content:
+                        lines.append(f"[{str(role).upper()}] {content}")
+                transcript_text = "\n".join(lines).strip()
+            except Exception as exc:
+                logger.debug("[CALL-LOG] Could not read chat context transcript: %s", exc)
+                transcript_text = ""
+            if not transcript_text:
+                rows = await asyncio.to_thread(db.list_call_transcripts, call_room_id=ctx.room.name, limit=500)
+                transcript_text = "\n".join(
+                    f"[{str(row.get('role') or '').upper()}] {str(row.get('content') or '').strip()}"
+                    for row in rows
+                    if str(row.get("content") or "").strip()
+                ).strip()
+
+            try:
+                if agent_tools.booking_intent:
+                    intent = agent_tools.booking_intent
+                    result = await async_create_booking(
+                        start_time=intent["start_time"],
+                        caller_name=intent["caller_name"] or "Unknown Caller",
+                        caller_phone=intent["caller_phone"],
+                        notes=intent["notes"],
+                    )
+                    if result.get("success"):
+                        booking_was_confirmed = True
+                        booking_status_msg = f"Booking Confirmed: {result.get('booking_id')}"
+                    else:
+                        booking_status_msg = f"Booking Failed: {result.get('message')}"
+                    agent_tools.booking_intent = None
+                else:
+                    summary_text = transcript_text or "Caller did not schedule during this call."
+                    handle_call_no_booking(
+                        caller_name=agent_tools._effective_name(agent_tools.caller_name) or "Unknown Caller",
+                        phone_number=agent_tools._effective_phone(agent_tools.caller_phone),
+                        call_summary=summary_text[:1200],
+                        related_call_room_id=ctx.room.name,
+                        config=live_config,
                     )
             except Exception as exc:
-                logger.warning("[RECORDING] Stop failed: %s", exc)
+                logger.warning("[CALL-LOG] Post-call booking/notification step failed: %s", exc)
+                booking_status_msg = f"Post-call handling failed: {exc}"
 
-        await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "completed")
-        await asyncio.to_thread(
-            db.save_call_log,
-            caller_phone,
-            duration,
-            transcript_text,
-            booking_status_msg,
-            recording_url,
-            agent_tools.caller_name or "",
-            "unknown",
-            estimated_cost,
-            call_dt.date().isoformat(),
-            call_dt.hour,
-            call_dt.strftime("%A"),
-            booking_was_confirmed,
-            interrupt_count,
-            ctx.room.name,
-        )
+            estimated_cost = estimate_gemini_live_cost_usd(duration)
+            call_dt = call_start_time.astimezone(_IST)
+
+            recording_url = ""
+            if egress_id:
+                try:
+                    stop_api = api.LiveKitAPI(
+                        url=os.environ["LIVEKIT_URL"],
+                        api_key=os.environ["LIVEKIT_API_KEY"],
+                        api_secret=os.environ["LIVEKIT_API_SECRET"],
+                    )
+                    await stop_api.egress.stop_egress(api.StopEgressRequest(egress_id=egress_id))
+                    await stop_api.aclose()
+                    base_url = str(os.environ.get("SUPABASE_URL", "")).rstrip("/")
+                    if base_url:
+                        recording_url = (
+                            f"{base_url}/storage/v1/object/public/call-recordings/recordings/{ctx.room.name}.ogg"
+                        )
+                except Exception as exc:
+                    logger.warning("[RECORDING] Stop failed: %s", exc)
+
+            active_result = await asyncio.to_thread(db.upsert_active_call, ctx.room.name, caller_phone, caller_name, "completed")
+            if active_result is None:
+                logger.warning("[CALL-LOG] Active call completion was not saved for room %s", ctx.room.name)
+
+            save_result = await asyncio.to_thread(
+                db.save_call_log,
+                caller_phone,
+                duration,
+                transcript_text,
+                booking_status_msg,
+                recording_url,
+                agent_tools.caller_name or "",
+                "unknown",
+                estimated_cost,
+                call_dt.date().isoformat(),
+                call_dt.hour,
+                call_dt.strftime("%A"),
+                booking_was_confirmed,
+                interrupt_count,
+                ctx.room.name,
+            )
+            if save_result.get("success"):
+                logger.info("[CALL-LOG] Saved call log for room %s", ctx.room.name)
+            else:
+                logger.error(
+                    "[CALL-LOG] Failed to save call log for room %s: %s",
+                    ctx.room.name,
+                    save_result.get("message", "unknown error"),
+                )
+        except Exception:
+            logger.exception("[CALL-LOG] Unhandled failure while saving final call data for room %s", ctx.room.name)
 
     ctx.add_shutdown_callback(unified_shutdown_hook)
+
+    @ctx.room.on("participant_disconnected")
+    def _on_participant_disconnected(participant) -> None:
+        del participant
+        logger.info("[ROOM] Participant disconnected; starting shutdown for %s", ctx.room.name)
+        ctx.shutdown()
 
 
 def main() -> None:

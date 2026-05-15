@@ -11,11 +11,12 @@ import sqlite3
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -28,13 +29,14 @@ from pypdf import PdfReader
 
 logger = logging.getLogger("kb")
 
-KB_SOURCE_TYPES = {"pdf_upload", "web_url", "text_note", "leadrat_crm"}
+KB_SOURCE_TYPES = {"pdf_upload", "web_url"}
 KB_JOB_STATUSES = {"pending", "processing", "completed", "failed", "cancelled"}
-KB_JOB_TYPES = {"ingest", "sync", "reindex"}
+KB_JOB_TYPES = {"ingest", "reindex"}
 KB_CACHE_TTL_SECONDS = 45
 KB_DEFAULT_EMBED_DIMENSIONS = 384
 KB_DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-LEADRAT_BASE_URL = "https://connect.leadrat.com"
+KB_MAX_SITEMAP_URLS = 250
+KB_MAX_SITEMAPS = 25
 
 _TOKENIZER = tiktoken.get_encoding("cl100k_base")
 _FASTEMBED_MODEL: Any = None
@@ -48,19 +50,19 @@ _CACHE: dict[str, dict[str, Any]] = {
     "sources": {"at": 0.0, "items": []},
     "jobs": {"at": 0.0, "items": []},
     "chunks": {"at": 0.0, "items": []},
-    "entities": {"at": 0.0, "items": []},
     "chunk_index": {"at": 0.0, "items": None},
 }
 
 KB_QUERY_HINTS = {
-    "project", "property", "flat", "apartment", "villa", "plot", "bhk", "price",
-    "pricing", "budget", "availability", "available", "status", "possession",
-    "amenities", "brochure", "location", "locality", "tower", "community", "rera",
-    "sqft", "area", "carpet", "saleable", "furnished", "rent", "buy", "purchase",
+    "price", "pricing", "cost", "plan", "plans", "feature", "features", "service",
+    "services", "product", "products", "availability", "available", "status",
+    "location", "address", "hours", "timing", "policy", "support", "setup",
+    "integration", "integrations", "demo", "booking", "appointment", "contact",
+    "refund", "shipping", "delivery", "warranty", "terms",
 }
 KB_TEXT_HINTS = {
     "about", "details", "overview", "features", "describe", "document", "pdf",
-    "website", "link", "explain", "guide", "note", "brochure",
+    "website", "link", "explain", "guide", "brochure", "page", "sitemap",
 }
 KB_STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "and", "or", "of", "for", "to",
@@ -125,7 +127,6 @@ def get_runtime_config(config: dict | None = None) -> dict[str, Any]:
         "kb_backend": str(get_value("kb_backend", "KB_BACKEND", "local_faiss") or "local_faiss").strip(),
         "kb_data_dir": data_dir,
         "kb_top_k": max(1, parse_int(get_value("kb_top_k", "KB_TOP_K", 4), 4)),
-        "kb_inventory_top_k": max(1, parse_int(get_value("kb_inventory_top_k", "KB_INVENTORY_TOP_K", 3), 3)),
         "kb_similarity_threshold": parse_float(get_value("kb_similarity_threshold", "KB_SIMILARITY_THRESHOLD", 0.18), 0.18),
         "kb_context_char_budget": max(400, parse_int(get_value("kb_context_char_budget", "KB_CONTEXT_CHAR_BUDGET", 2800), 2800)),
         "kb_live_timeout_ms": max(50, parse_int(get_value("kb_live_timeout_ms", "KB_LIVE_TIMEOUT_MS", 150), 150)),
@@ -143,12 +144,6 @@ def get_runtime_config(config: dict | None = None) -> dict[str, Any]:
         "google_api_key": str(get_value("google_api_key", "GOOGLE_API_KEY", "") or "").strip(),
         "kb_index_kind": str(get_value("kb_index_kind", "KB_INDEX_KIND", "flat_ip") or "flat_ip").strip().lower(),
         "kb_rerank_enabled": parse_bool(get_value("kb_rerank_enabled", "KB_RERANK_ENABLED", False), False),
-        "leadrat_enabled": parse_bool(get_value("leadrat_enabled", "LEADRAT_ENABLED", False), False),
-        "leadrat_tenant": str(get_value("leadrat_tenant", "LEADRAT_TENANT", "") or "").strip(),
-        "leadrat_api_key": str(get_value("leadrat_api_key", "LEADRAT_API_KEY", "") or "").strip(),
-        "leadrat_secret_key": str(get_value("leadrat_secret_key", "LEADRAT_SECRET_KEY", "") or "").strip(),
-        "leadrat_sync_interval_minutes": max(5, parse_int(get_value("leadrat_sync_interval_minutes", "LEADRAT_SYNC_INTERVAL_MINUTES", 5), 5)),
-        "leadrat_base_url": str(get_value("leadrat_base_url", "LEADRAT_BASE_URL", LEADRAT_BASE_URL) or LEADRAT_BASE_URL).strip() or LEADRAT_BASE_URL,
     }
 
 
@@ -191,13 +186,8 @@ def _validate_source_payload(
     config: dict | None = None,
 ) -> None:
     url_text = str(source_url or "").strip()
-    text_body = str(raw_text or "").strip()
     path_text = str(storage_path or "").strip()
 
-    if source_type == "text_note":
-        if not text_body:
-            raise ValueError("Text-note KB sources require raw_text.")
-        return
     if source_type == "web_url":
         if not url_text:
             raise ValueError("Web KB sources require source_url.")
@@ -248,7 +238,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             metadata TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_kb_sources_type_status ON kb_sources(source_type, status);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_sources_leadrat_unique ON kb_sources(source_type) WHERE source_type = 'leadrat_crm';
 
         CREATE TABLE IF NOT EXISTS kb_documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,33 +270,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_kb_chunks_source ON kb_chunks(source_id);
 
-        CREATE TABLE IF NOT EXISTS kb_structured_entities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            source_id INTEGER NOT NULL REFERENCES kb_sources(id) ON DELETE CASCADE,
-            entity_type TEXT NOT NULL,
-            external_id TEXT NOT NULL,
-            title TEXT NOT NULL DEFAULT '',
-            serial_no TEXT,
-            project_name TEXT,
-            status TEXT,
-            location_text TEXT,
-            bhk_text TEXT,
-            price_text TEXT,
-            possession_text TEXT,
-            attributes TEXT NOT NULL DEFAULT '{}',
-            narrative_text TEXT NOT NULL DEFAULT '',
-            checksum TEXT,
-            embedding TEXT NOT NULL DEFAULT '[]',
-            raw_payload TEXT NOT NULL DEFAULT '{}',
-            last_synced_at TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            UNIQUE(entity_type, external_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_kb_structured_title ON kb_structured_entities(title);
-        CREATE INDEX IF NOT EXISTS idx_kb_structured_project_name ON kb_structured_entities(project_name);
-
         CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT NOT NULL,
@@ -329,6 +291,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        DELETE FROM kb_ingest_jobs WHERE source_type NOT IN ('pdf_upload', 'web_url');
+        DELETE FROM kb_sources WHERE source_type NOT IN ('pdf_upload', 'web_url');
         """
     )
     conn.commit()
@@ -691,13 +656,7 @@ def kb_runtime_issue_payload(exc: Exception | str, *, config: dict | None = None
         "kb_enabled": runtime["kb_enabled"],
         "backend": runtime["kb_backend"],
         "data_dir": str(_data_dir(config)),
-        "counts": {"sources": 0, "jobs": 0, "entities": 0, "chunks": 0},
-        "leadrat": {
-            "enabled": runtime["leadrat_enabled"],
-            "tenant": runtime["leadrat_tenant"],
-            "sync_interval_minutes": runtime["leadrat_sync_interval_minutes"],
-            "source": None,
-        },
+        "counts": {"sources": 0, "jobs": 0, "chunks": 0},
     }
 
 
@@ -742,7 +701,7 @@ def chunk_text(text: str, *, chunk_size: int = 400, overlap: int = 60, config: d
 
 def _source_type_from_payload(payload: dict[str, Any]) -> str:
     source_type = str(payload.get("source_type") or payload.get("type") or "").strip().lower()
-    aliases = {"url": "web_url", "web": "web_url", "pdf": "pdf_upload", "text": "text_note", "note": "text_note"}
+    aliases = {"url": "web_url", "web": "web_url", "website": "web_url", "sitemap": "web_url", "pdf": "pdf_upload"}
     source_type = aliases.get(source_type, source_type)
     if source_type not in KB_SOURCE_TYPES:
         raise ValueError(f"Unsupported KB source_type: {source_type}")
@@ -758,12 +717,6 @@ def list_sources(limit: int = 200, *, config: dict | None = None) -> list[dict[s
 def get_source(source_id: str | int, *, config: dict | None = None) -> dict[str, Any] | None:
     with _connect(config) as conn:
         row = conn.execute("SELECT * FROM kb_sources WHERE id = ? LIMIT 1", (str(source_id),)).fetchone()
-    return _row_to_dict(row)
-
-
-def get_leadrat_source(*, config: dict | None = None) -> dict[str, Any] | None:
-    with _connect(config) as conn:
-        row = conn.execute("SELECT * FROM kb_sources WHERE source_type = 'leadrat_crm' LIMIT 1").fetchone()
     return _row_to_dict(row)
 
 
@@ -807,7 +760,7 @@ def create_source(payload: dict[str, Any], *, queue_sync: bool = True, config: d
         queue_job(
             source_id=source_id,
             source_type=source_type,
-            job_type="sync" if source_type == "leadrat_crm" else "ingest",
+            job_type="ingest",
             payload={},
             config=config,
         )
@@ -1071,66 +1024,6 @@ def _fetch_source_documents(source_id: str | int, *, config: dict | None = None)
     return [_row_to_dict(row) for row in rows if row is not None]
 
 
-def _fetch_source_entities(source_id: str | int, *, config: dict | None = None) -> list[dict[str, Any]]:
-    with _connect(config) as conn:
-        rows = conn.execute("SELECT * FROM kb_structured_entities WHERE source_id = ?", (str(source_id),)).fetchall()
-    return [_row_to_dict(row) for row in rows if row is not None]
-
-
-def _upsert_structured_entity(source_id: str | int, entity: dict[str, Any], *, config: dict | None = None) -> dict[str, Any]:
-    checksum = _entity_checksum(entity)
-    embedding = embed_texts([entity.get("narrative_text") or entity["title"]], config=config, is_query=False)[0]
-    now = _utcnow_iso()
-    with _connect(config) as conn:
-        conn.execute(
-            """
-            INSERT INTO kb_structured_entities(
-                created_at, updated_at, source_id, entity_type, external_id, title, serial_no, project_name,
-                status, location_text, bhk_text, price_text, possession_text, attributes, narrative_text,
-                checksum, embedding, raw_payload, last_synced_at, is_active
-            )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(entity_type, external_id) DO UPDATE SET
-                updated_at=excluded.updated_at,
-                source_id=excluded.source_id,
-                title=excluded.title,
-                serial_no=excluded.serial_no,
-                project_name=excluded.project_name,
-                status=excluded.status,
-                location_text=excluded.location_text,
-                bhk_text=excluded.bhk_text,
-                price_text=excluded.price_text,
-                possession_text=excluded.possession_text,
-                attributes=excluded.attributes,
-                narrative_text=excluded.narrative_text,
-                checksum=excluded.checksum,
-                embedding=excluded.embedding,
-                raw_payload=excluded.raw_payload,
-                last_synced_at=excluded.last_synced_at,
-                is_active=1
-            """,
-            (
-                now, now, source_id, entity["entity_type"], entity["external_id"], entity["title"],
-                entity.get("serial_no") or None, entity.get("project_name") or None,
-                entity.get("status") or None, entity.get("location_text") or None,
-                entity.get("bhk_text") or None, entity.get("price_text") or None,
-                entity.get("possession_text") or None, _json_dumps(entity.get("attributes") or {}),
-                entity.get("narrative_text") or "", checksum, _json_dumps(embedding),
-                _json_dumps(entity.get("raw_payload") or {}), now,
-            ),
-        )
-        row = conn.execute(
-            "SELECT * FROM kb_structured_entities WHERE entity_type = ? AND external_id = ? LIMIT 1",
-            (entity["entity_type"], entity["external_id"]),
-        ).fetchone()
-        conn.commit()
-    _reset_cache("entities")
-    result = _row_to_dict(row)
-    if not result:
-        raise RuntimeError(f"Unable to upsert KB structured entity {entity['external_id']}.")
-    return result
-
-
 def save_uploaded_file(filename: str, content: bytes, *, mime_type: str | None = None, config: dict | None = None) -> dict[str, Any]:
     if not filename:
         raise ValueError("File name is required.")
@@ -1206,11 +1099,15 @@ def _extract_pdf_text_from_bytes(content: bytes) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _extract_url_text(url: str) -> str:
-    response = httpx.get(_validate_public_http_url(url), follow_redirects=True, timeout=30.0)
+def _fetch_url_response(url: str, *, timeout: float = 30.0) -> httpx.Response:
+    response = httpx.get(_validate_public_http_url(url), follow_redirects=True, timeout=timeout)
     response.raise_for_status()
+    return response
+
+
+def _extract_text_from_html(html: str, *, url: str) -> str:
     extracted = trafilatura.extract(
-        response.text,
+        html,
         url=url,
         include_links=True,
         include_tables=True,
@@ -1219,571 +1116,262 @@ def _extract_url_text(url: str) -> str:
     return str(extracted or "").strip()
 
 
+def _html_title(html: str, fallback_url: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html or "", flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        title = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
+        if title:
+            return _safe_title(title, _title_from_web_url(fallback_url))
+    return _title_from_web_url(fallback_url)
+
+
+def _title_from_web_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    path = parsed.path.strip("/")
+    if not path:
+        return parsed.netloc or "Website page"
+    leaf = path.rsplit("/", 1)[-1] or path
+    leaf = re.sub(r"\.[a-zA-Z0-9]{1,8}$", "", leaf)
+    leaf = re.sub(r"[-_]+", " ", leaf).strip()
+    return _safe_title(leaf.title() if leaf else parsed.netloc, "Website page")
+
+
+def _xml_tag_name(tag: str) -> str:
+    return str(tag or "").rsplit("}", 1)[-1].lower()
+
+
+def _same_site_url(candidate: str, root_url: str) -> bool:
+    candidate_host = (urlparse(candidate).hostname or "").lower().removeprefix("www.")
+    root_host = (urlparse(root_url).hostname or "").lower().removeprefix("www.")
+    return bool(candidate_host and root_host and candidate_host == root_host)
+
+
+def _is_sitemap_response(url: str, response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "").lower()
+    text = response.text.lstrip()[:500].lower()
+    parsed_path = urlparse(str(response.url or url)).path.lower()
+    return (
+        "xml" in content_type
+        or parsed_path.endswith(".xml")
+        or parsed_path.endswith(".xml.gz")
+        or "<urlset" in text
+        or "<sitemapindex" in text
+    )
+
+
+def _parse_sitemap_locs(xml_text: str, *, base_url: str) -> tuple[list[str], list[str]]:
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Unable to parse sitemap XML: {exc}") from exc
+
+    root_tag = _xml_tag_name(root.tag)
+    sitemap_urls: list[str] = []
+    page_urls: list[str] = []
+    if root_tag == "sitemapindex":
+        target = sitemap_urls
+    elif root_tag == "urlset":
+        target = page_urls
+    else:
+        target = page_urls
+
+    for loc in root.findall(".//{*}loc"):
+        value = str(loc.text or "").strip()
+        if not value:
+            continue
+        absolute_url = _validate_public_http_url(urljoin(base_url, value))
+        if _same_site_url(absolute_url, base_url):
+            target.append(absolute_url)
+    return sitemap_urls, page_urls
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in urls:
+        clean = str(url or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+    return result
+
+
+def _collect_sitemap_page_urls(sitemap_url: str) -> list[str]:
+    root_url = _validate_public_http_url(sitemap_url)
+    pending = [root_url]
+    seen_sitemaps: set[str] = set()
+    page_urls: list[str] = []
+
+    while pending and len(seen_sitemaps) < KB_MAX_SITEMAPS and len(page_urls) < KB_MAX_SITEMAP_URLS:
+        current = pending.pop(0)
+        if current in seen_sitemaps:
+            continue
+        seen_sitemaps.add(current)
+        response = _fetch_url_response(current, timeout=35.0)
+        nested_sitemaps, nested_pages = _parse_sitemap_locs(response.text, base_url=current)
+        pending.extend(url for url in _dedupe_urls(nested_sitemaps) if url not in seen_sitemaps)
+        for page_url in _dedupe_urls(nested_pages):
+            if len(page_urls) >= KB_MAX_SITEMAP_URLS:
+                break
+            if page_url not in page_urls:
+                page_urls.append(page_url)
+
+    return page_urls
+
+
+def _extract_web_documents(source_url: str) -> list[dict[str, Any]]:
+    response = _fetch_url_response(source_url)
+    final_url = str(response.url)
+    documents: list[dict[str, Any]] = []
+
+    if _is_sitemap_response(source_url, response):
+        page_urls = _collect_sitemap_page_urls(final_url)
+        for page_url in page_urls:
+            try:
+                page_response = _fetch_url_response(page_url)
+                page_text = _extract_text_from_html(page_response.text, url=str(page_response.url))
+            except Exception as exc:
+                logger.warning(f"[KB] Failed to crawl sitemap page {page_url}: {exc}")
+                continue
+            if not page_text:
+                continue
+            page_final_url = str(page_response.url)
+            documents.append(
+                {
+                    "external_id": f"url:{page_final_url}",
+                    "title": _html_title(page_response.text, page_final_url),
+                    "body_text": page_text,
+                    "metadata": {"source_url": page_final_url, "sitemap_url": final_url},
+                }
+            )
+        return documents
+
+    page_text = _extract_text_from_html(response.text, url=final_url)
+    if page_text:
+        documents.append(
+            {
+                "external_id": f"url:{final_url}",
+                "title": _html_title(response.text, final_url),
+                "body_text": page_text,
+                "metadata": {"source_url": final_url},
+            }
+        )
+    return documents
+
+
+def _ingest_documents_for_source(
+    source: dict[str, Any],
+    documents: list[dict[str, Any]],
+    *,
+    source_metadata: dict[str, Any],
+    config: dict | None = None,
+) -> dict[str, Any]:
+    source_id = source["id"]
+    source_type = str(source.get("source_type") or "").strip().lower()
+    current_docs = {str(row.get("external_id")): row for row in _fetch_source_documents(source_id, config=config)}
+    seen_external_ids: set[str] = set()
+    document_ids: list[Any] = []
+    chunk_count = 0
+    character_count = 0
+
+    for item in documents:
+        content = str(item.get("body_text") or "").strip()
+        if not content:
+            continue
+        external_id = str(item.get("external_id") or f"source:{source_id}:{len(seen_external_ids)}").strip()
+        if external_id in seen_external_ids:
+            continue
+        seen_external_ids.add(external_id)
+        title = _safe_title(item.get("title"), _safe_title(source.get("title"), "Knowledge Source"))
+        item_metadata = {**source_metadata, **dict(item.get("metadata") or {})}
+        document = _upsert_document(
+            source_id=source_id,
+            external_id=external_id,
+            document_type=source_type,
+            title=title,
+            body_text=content,
+            metadata=item_metadata,
+            config=config,
+        )
+        document_ids.append(document["id"])
+        character_count += len(content)
+        chunk_count += _replace_document_chunks(
+            source_id=source_id,
+            document_id=document["id"],
+            title=title,
+            content=content,
+            metadata={
+                "source_type": source_type,
+                "title": title,
+                "source_url": item_metadata.get("source_url") or source.get("source_url"),
+            },
+            config=config,
+        )
+
+    with _connect(config) as conn:
+        for external_id, row in current_docs.items():
+            if external_id not in seen_external_ids:
+                conn.execute("DELETE FROM kb_documents WHERE id = ?", (str(row["id"]),))
+        conn.commit()
+
+    if not seen_external_ids:
+        raise RuntimeError(f"No text could be extracted from source {source_id}.")
+
+    return {
+        "source_id": source_id,
+        "document_ids": document_ids,
+        "document_count": len(seen_external_ids),
+        "chunk_count": chunk_count,
+        "character_count": character_count,
+    }
+
+
 def _ingest_single_source(source: dict[str, Any], *, config: dict | None = None) -> dict[str, Any]:
     source_type = str(source.get("source_type") or "").strip().lower()
     source_id = source["id"]
     title = _safe_title(source.get("title"), "Knowledge Source")
-    content = ""
     metadata = dict(source.get("metadata") or {})
-    document_type = source_type
-    if source_type == "text_note":
-        content = str(source.get("raw_text") or "").strip()
-    elif source_type == "web_url":
-        content = _extract_url_text(str(source.get("source_url") or "").strip())
+    documents: list[dict[str, Any]]
+    if source_type == "web_url":
+        documents = _extract_web_documents(str(source.get("source_url") or "").strip())
     elif source_type == "pdf_upload":
         content = _extract_pdf_text_from_bytes(_download_source_bytes(source, config=config))
+        documents = [
+            {
+                "external_id": f"source:{source_id}",
+                "title": title,
+                "body_text": content,
+                "metadata": {"source_url": source.get("source_url")},
+            }
+        ]
     else:
         raise RuntimeError(f"Unsupported KB ingest source type: {source_type}")
-
-    if not content:
-        raise RuntimeError(f"No text could be extracted from source {source_id}.")
 
     metadata.update(
         {
             "source_url": source.get("source_url"),
             "mime_type": source.get("mime_type"),
             "last_ingested_at": _utcnow_iso(),
-            "character_count": len(content),
         }
     )
-    document = _upsert_document(
-        source_id=source_id,
-        external_id=f"source:{source_id}",
-        document_type=document_type,
-        title=title,
-        body_text=content,
-        metadata=metadata,
-        config=config,
-    )
-    chunk_count = _replace_document_chunks(
-        source_id=source_id,
-        document_id=document["id"],
-        title=title,
-        content=content,
-        metadata={"source_type": source_type, "title": title, "source_url": source.get("source_url")},
+    result = _ingest_documents_for_source(
+        source,
+        documents,
+        source_metadata=metadata,
         config=config,
     )
     finished_at = _utcnow_iso()
+    metadata.update(
+        {
+            "document_count": result["document_count"],
+            "chunk_count": result["chunk_count"],
+            "character_count": result["character_count"],
+        }
+    )
     update_source(source_id, {"status": "ready", "sync_error": "", "metadata": metadata, "last_synced_at": finished_at}, config=config)
     rebuild_index(config=config)
-    return {"source_id": source_id, "document_id": document["id"], "chunk_count": chunk_count, "character_count": len(content)}
-
-
-def _flatten_address(address: dict[str, Any] | None) -> str:
-    if not isinstance(address, dict):
-        return ""
-    pieces = [
-        address.get("subLocality"), address.get("locality"), address.get("community"),
-        address.get("subCommunity"), address.get("district"), address.get("city"),
-        address.get("state"), address.get("country"), address.get("postalCode"),
-    ]
-    return ", ".join(str(piece).strip() for piece in pieces if str(piece or "").strip())
-
-
-def _format_currency(amount: Any, currency: str | None = None) -> str:
-    if amount in (None, ""):
-        return ""
-    try:
-        numeric = float(amount)
-    except (TypeError, ValueError):
-        return str(amount)
-    prefix = f"{currency} " if currency else ""
-    if numeric.is_integer():
-        return f"{prefix}{int(numeric):,}"
-    return f"{prefix}{numeric:,.2f}"
-
-
-def _format_project_price(raw: dict[str, Any]) -> str:
-    minimum = raw.get("minimumPrice")
-    maximum = raw.get("maximumPrice")
-    if minimum not in (None, "") and maximum not in (None, ""):
-        return f"{_format_currency(minimum)} to {_format_currency(maximum)}"
-    if minimum not in (None, ""):
-        return f"From {_format_currency(minimum)}"
-    if maximum not in (None, ""):
-        return f"Up to {_format_currency(maximum)}"
-    return ""
-
-
-def _format_property_price(raw: dict[str, Any]) -> str:
-    info = raw.get("monetaryInfo") or {}
-    if not isinstance(info, dict):
-        info = {}
-    currency = info.get("currency")
-    bits: list[str] = []
-    expected = info.get("expectedPrice")
-    if expected not in (None, ""):
-        bits.append(f"Expected price {_format_currency(expected, currency)}")
-    deposit = info.get("depositAmount")
-    if deposit not in (None, ""):
-        bits.append(f"Deposit {_format_currency(deposit, currency)}")
-    maintenance = info.get("maintenanceCost")
-    if maintenance not in (None, ""):
-        bits.append(f"Maintenance {_format_currency(maintenance, currency)}")
-    extra_deposit = raw.get("securityDepositAmount")
-    if extra_deposit not in (None, ""):
-        bits.append(f"Security deposit {_format_currency(extra_deposit, raw.get('securityDepositUnit'))}")
-    return " | ".join(bits)
-
-
-def _format_dimensions(raw: dict[str, Any]) -> str:
-    dimension = raw.get("dimension") or {}
-    if not isinstance(dimension, dict):
-        return ""
-    bits: list[str] = []
-    for field, unit_field, label in [
-        ("carpetArea", "carpetAreaUnit", "Carpet"),
-        ("buildUpArea", "buildUpAreaUnit", "Built-up"),
-        ("saleableArea", "saleableAreaUnit", "Saleable"),
-        ("propertyArea", "propertyAreaUnit", "Property area"),
-        ("area", "areaUnitUnit", "Area"),
-    ]:
-        amount = dimension.get(field)
-        if amount in (None, ""):
-            continue
-        unit = str(dimension.get(unit_field) or "").strip()
-        suffix = f" {unit}" if unit else ""
-        bits.append(f"{label}: {amount}{suffix}")
-    return " | ".join(bits)
-
-
-def _format_bhk(raw: dict[str, Any]) -> str:
-    bhk = raw.get("noOfBHK")
-    if bhk in (None, ""):
-        return ""
-    bhk_type = str(raw.get("bhkType") or "").strip()
-    suffix = f" ({bhk_type})" if bhk_type else ""
-    return f"{bhk} BHK{suffix}"
-
-
-def _collect_amenities(raw: dict[str, Any]) -> list[str]:
-    result = []
-    for item in raw.get("amenities") or []:
-        if isinstance(item, dict):
-            name = item.get("amenityDisplayName") or item.get("name")
-            if name:
-                result.append(str(name))
-    return result
-
-
-def _collect_attributes(raw: dict[str, Any]) -> list[str]:
-    result = []
-    for item in raw.get("attributes") or []:
-        if isinstance(item, dict):
-            label = str(item.get("attributeDisplayName") or item.get("name") or "").strip()
-            value = str(item.get("value") or "").strip()
-            if label and value:
-                result.append(f"{label}: {value}")
-            elif label:
-                result.append(label)
-    return result
-
-
-def _collect_brochures(raw: dict[str, Any]) -> list[str]:
-    result = []
-    for item in raw.get("brochures") or []:
-        if isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            url = str(item.get("url") or "").strip()
-            if name and url:
-                result.append(f"{name} ({url})")
-            elif url:
-                result.append(url)
-            elif name:
-                result.append(name)
-    return result
-
-
-def _build_project_entity(raw: dict[str, Any]) -> dict[str, Any]:
-    title = _safe_title(raw.get("name"), "Unnamed project")
-    status_parts = [str(raw.get("status") or "").strip(), str(raw.get("currentStatus") or "").strip()]
-    status = " / ".join(part for part in status_parts if part)
-    rera_numbers = ", ".join(str(item).strip() for item in (raw.get("reraNumbers") or []) if str(item).strip())
-    description = str(raw.get("description") or "").strip()
-    notes = str(raw.get("notes") or "").strip()
-    price_text = _format_project_price(raw)
-    possession = str(raw.get("possessionDate") or "").strip()
-    narrative_parts = [
-        f"Project {title}",
-        f"Status: {status}" if status else "",
-        f"Price range: {price_text}" if price_text else "",
-        f"Possession: {possession}" if possession else "",
-        f"RERA: {rera_numbers}" if rera_numbers else "",
-        description,
-        notes,
-    ]
-    return {
-        "entity_type": "project",
-        "external_id": str(raw.get("id") or "").strip(),
-        "title": title,
-        "serial_no": str(raw.get("serialNo") or "").strip(),
-        "project_name": title,
-        "status": status,
-        "location_text": "",
-        "bhk_text": "",
-        "price_text": price_text,
-        "possession_text": possession,
-        "attributes": _coerce_jsonable(
-            {
-                "certificates": raw.get("certificates"),
-                "rera_numbers": raw.get("reraNumbers") or [],
-                "total_flats": raw.get("totalFlats"),
-                "total_blocks": raw.get("totalBlocks"),
-                "total_floor": raw.get("totalFloor"),
-                "area": raw.get("area"),
-                "area_unit_id": raw.get("areaUnitId"),
-                "facings": raw.get("facings") or [],
-                "description": description,
-                "notes": notes,
-            }
-        ),
-        "narrative_text": "\n".join(part for part in narrative_parts if part).strip(),
-        "raw_payload": _coerce_jsonable(raw),
-    }
-
-
-def _build_property_entity(raw: dict[str, Any]) -> dict[str, Any]:
-    title = _safe_title(raw.get("title"), "Unnamed property")
-    location_text = _flatten_address(raw.get("address"))
-    project_name = str(raw.get("project") or "").strip()
-    if not project_name:
-        projects = raw.get("projects") or []
-        if isinstance(projects, list):
-            project_name = ", ".join(str(item).strip() for item in projects if str(item).strip())
-    price_text = _format_property_price(raw)
-    bhk_text = _format_bhk(raw)
-    dimension_text = _format_dimensions(raw)
-    amenities = _collect_amenities(raw)
-    attributes = _collect_attributes(raw)
-    brochures = _collect_brochures(raw)
-    description = str(raw.get("aboutProperty") or "").strip()
-    notes = str(raw.get("notes") or "").strip()
-    possession = str(raw.get("possessionDate") or "").strip()
-    narrative_parts = [
-        f"Property {title}",
-        f"Project: {project_name}" if project_name else "",
-        f"Status: {raw.get('status')}" if raw.get("status") else "",
-        f"BHK: {bhk_text}" if bhk_text else "",
-        f"Price: {price_text}" if price_text else "",
-        f"Dimensions: {dimension_text}" if dimension_text else "",
-        f"Location: {location_text}" if location_text else "",
-        f"Possession: {possession}" if possession else "",
-        f"Amenities: {', '.join(amenities)}" if amenities else "",
-        f"Attributes: {', '.join(attributes)}" if attributes else "",
-        f"Brochures: {', '.join(brochures)}" if brochures else "",
-        description,
-        notes,
-    ]
-    return {
-        "entity_type": "property",
-        "external_id": str(raw.get("id") or "").strip(),
-        "title": title,
-        "serial_no": str(raw.get("serialNo") or "").strip(),
-        "project_name": project_name,
-        "status": str(raw.get("status") or "").strip(),
-        "location_text": location_text,
-        "bhk_text": bhk_text,
-        "price_text": price_text,
-        "possession_text": possession,
-        "attributes": _coerce_jsonable(
-            {
-                "sale_type": raw.get("saleType"),
-                "enquired_for": raw.get("enquiredFor"),
-                "status": raw.get("status"),
-                "property_type_id": raw.get("propertyTypeId"),
-                "property_type": raw.get("propertyType"),
-                "furnish_status": raw.get("furnishStatus"),
-                "facing": raw.get("facing"),
-                "amenities": amenities,
-                "attributes": attributes,
-                "brochures": brochures,
-                "dimension_text": dimension_text,
-                "about_property": description,
-                "notes": notes,
-                "links": raw.get("links") or [],
-                "microsite_url": raw.get("micrositeURL"),
-                "short_url": raw.get("shortUrl"),
-            }
-        ),
-        "narrative_text": "\n".join(part for part in narrative_parts if part).strip(),
-        "raw_payload": _coerce_jsonable(raw),
-    }
-
-
-def _entity_checksum(entity: dict[str, Any]) -> str:
-    stable = {
-        "title": entity.get("title"),
-        "serial_no": entity.get("serial_no"),
-        "project_name": entity.get("project_name"),
-        "status": entity.get("status"),
-        "location_text": entity.get("location_text"),
-        "bhk_text": entity.get("bhk_text"),
-        "price_text": entity.get("price_text"),
-        "possession_text": entity.get("possession_text"),
-        "narrative_text": entity.get("narrative_text"),
-        "attributes": entity.get("attributes"),
-    }
-    return _sha256_text(json.dumps(stable, sort_keys=True, default=str))
-
-
-def _format_entity_fact_block(entity: dict[str, Any]) -> str:
-    lines = []
-    entity_type = str(entity.get("entity_type") or "record").strip().title()
-    title = str(entity.get("title") or "").strip()
-    if title:
-        lines.append(f"{entity_type}: {title}")
-    if entity.get("serial_no"):
-        lines.append(f"Serial: {entity.get('serial_no')}")
-    if entity.get("project_name") and entity.get("project_name") != entity.get("title"):
-        lines.append(f"Project: {entity.get('project_name')}")
-    if entity.get("status"):
-        lines.append(f"Status: {entity.get('status')}")
-    if entity.get("location_text"):
-        lines.append(f"Location: {entity.get('location_text')}")
-    if entity.get("bhk_text"):
-        lines.append(f"BHK: {entity.get('bhk_text')}")
-    if entity.get("price_text"):
-        lines.append(f"Price: {entity.get('price_text')}")
-    if entity.get("possession_text"):
-        lines.append(f"Possession: {entity.get('possession_text')}")
-    attributes = entity.get("attributes") or {}
-    if isinstance(attributes, dict):
-        dimension_text = str(attributes.get("dimension_text") or "").strip()
-        amenities = attributes.get("amenities") or []
-        brochures = attributes.get("brochures") or []
-        if dimension_text:
-            lines.append(f"Dimensions: {dimension_text}")
-        if amenities:
-            lines.append(f"Amenities: {', '.join(str(item) for item in amenities[:8])}")
-        if brochures:
-            lines.append(f"Brochures: {', '.join(str(item) for item in brochures[:3])}")
-    if entity.get("last_synced_at"):
-        lines.append(f"Source: LeadRat CRM synced {entity.get('last_synced_at')}")
-    return "\n".join(lines)
-
-
-class LeadratClient:
-    def __init__(self, *, tenant: str, api_key: str, secret_key: str, base_url: str = LEADRAT_BASE_URL) -> None:
-        self.tenant = tenant.strip()
-        self.api_key = api_key.strip()
-        self.secret_key = secret_key.strip()
-        self.base_url = base_url.rstrip("/")
-        self._access_token = ""
-        self._expires_at = datetime.min.replace(tzinfo=timezone.utc)
-
-    def is_configured(self) -> bool:
-        return bool(self.tenant and self.api_key and self.secret_key)
-
-    def _auth_headers(self) -> dict[str, str]:
-        return {
-            "tenant": self.tenant,
-            "Authorization": f"Bearer {self._get_access_token()}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-    def _get_access_token(self) -> str:
-        if self._access_token and _utcnow() < (self._expires_at - timedelta(minutes=2)):
-            return self._access_token
-        if not self.is_configured():
-            raise RuntimeError("LeadRat credentials are incomplete.")
-        with httpx.Client(timeout=20.0) as client:
-            response = client.post(
-                f"{self.base_url}/api/v1/authentication/token",
-                headers={"tenant": self.tenant, "Content-Type": "application/json"},
-                json={"apiKey": self.api_key, "secretKey": self.secret_key},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict) or not data.get("accessToken"):
-            raise RuntimeError("LeadRat token response was missing accessToken.")
-        self._access_token = str(data.get("accessToken"))
-        expires_in = parse_int(data.get("expiresIn"), 3600)
-        self._expires_at = _utcnow() + timedelta(seconds=max(60, expires_in))
-        return self._access_token
-
-    def _request(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        with httpx.Client(timeout=35.0) as client:
-            response = client.get(f"{self.base_url}{path}", headers=self._auth_headers(), params=params)
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("LeadRat returned a non-object response.")
-        return payload
-
-    def validate_connection(self) -> dict[str, Any]:
-        token = self._get_access_token()
-        return {"status": "ok", "token_preview": token[:12] + "..." if token else "", "expires_at": self._expires_at.isoformat()}
-
-    def _fetch_all_pages(self, path: str, *, page_size: int = 100) -> list[dict[str, Any]]:
-        page = 1
-        items: list[dict[str, Any]] = []
-        while True:
-            payload = self._request(path, params={"PageNumber": page, "PageSize": page_size})
-            page_items = payload.get("items") or []
-            if not isinstance(page_items, list):
-                page_items = []
-            items.extend(item for item in page_items if isinstance(item, dict))
-            total = parse_int(payload.get("totalCount"), len(items))
-            if not page_items or len(items) >= total:
-                break
-            page += 1
-        return items
-
-    def fetch_projects(self) -> list[dict[str, Any]]:
-        return self._fetch_all_pages("/api/v1/project")
-
-    def fetch_properties(self) -> list[dict[str, Any]]:
-        return self._fetch_all_pages("/api/v1/property")
-
-
-def ensure_leadrat_source(config: dict | None = None) -> dict[str, Any]:
-    runtime = get_runtime_config(config)
-    existing = get_leadrat_source(config=runtime)
-    metadata = {
-        "tenant": runtime["leadrat_tenant"],
-        "base_url": runtime["leadrat_base_url"],
-        "sync_interval_minutes": runtime["leadrat_sync_interval_minutes"],
-    }
-    if existing:
-        return update_source(existing["id"], {"title": "LeadRat CRM", "enabled": runtime["leadrat_enabled"], "metadata": metadata}, config=runtime)
-    return create_source(
-        {"source_type": "leadrat_crm", "title": "LeadRat CRM", "enabled": runtime["leadrat_enabled"], "metadata": metadata},
-        queue_sync=False,
-        config=runtime,
-    )
-
-
-def validate_leadrat_connection(config: dict | None = None) -> dict[str, Any]:
-    runtime = get_runtime_config(config)
-    client = LeadratClient(
-        tenant=runtime["leadrat_tenant"],
-        api_key=runtime["leadrat_api_key"],
-        secret_key=runtime["leadrat_secret_key"],
-        base_url=runtime["leadrat_base_url"],
-    )
-    if not client.is_configured():
-        raise RuntimeError("LeadRat tenant, API key, and secret key are required.")
-    result = client.validate_connection()
-    ensure_leadrat_source(runtime)
-    return result
-
-
-def sync_leadrat_source(config: dict | None = None, *, job_id: str | int | None = None) -> dict[str, Any]:
-    runtime = get_runtime_config(config)
-    if not runtime["leadrat_enabled"]:
-        raise RuntimeError("LeadRat sync is disabled in configuration.")
-    client = LeadratClient(
-        tenant=runtime["leadrat_tenant"],
-        api_key=runtime["leadrat_api_key"],
-        secret_key=runtime["leadrat_secret_key"],
-        base_url=runtime["leadrat_base_url"],
-    )
-    if not client.is_configured():
-        raise RuntimeError("LeadRat tenant, API key, and secret key are required.")
-
-    source = ensure_leadrat_source(runtime)
-    source_id = source["id"]
-    update_source(source_id, {"status": "syncing", "sync_error": ""}, config=config)
-    started_at = _utcnow_iso()
-    _update_sync_progress(source_id, phase="fetch_projects", label="Fetching projects from LeadRat...", processed=0, total=1, item_type="projects", job_id=job_id, config=config)
-    projects = client.fetch_projects()
-    _update_sync_progress(source_id, phase="fetch_properties", label="Fetching properties from LeadRat...", processed=0, total=1, item_type="properties", job_id=job_id, config=config)
-    properties = client.fetch_properties()
-
-    current_docs = {row["external_id"]: row for row in _fetch_source_documents(source_id, config=config)}
-    current_entities = {f"{row.get('entity_type')}:{row.get('external_id')}": row for row in _fetch_source_entities(source_id, config=config)}
-    seen_doc_ids: set[str] = set()
-    seen_entity_ids: set[str] = set()
-    entity_count = 0
-    chunk_count = 0
-
-    for records, builder, entity_type in [(projects, _build_project_entity, "project"), (properties, _build_property_entity, "property")]:
-        total = len(records)
-        processed = 0
-        if total:
-            _update_sync_progress(source_id, phase=f"{entity_type}s", label=f"Indexing {entity_type} records...", processed=0, total=total, item_type=f"{entity_type}s", job_id=job_id, config=config)
-        for raw in records:
-            entity = builder(raw)
-            if not entity.get("external_id"):
-                continue
-            entity_row = _upsert_structured_entity(source_id, entity, config=config)
-            entity_count += 1
-            seen_entity_ids.add(f"{entity_type}:{entity['external_id']}")
-            external_doc_id = f"{entity_type}:{entity['external_id']}"
-            document = _upsert_document(
-                source_id=source_id,
-                external_id=external_doc_id,
-                document_type=f"leadrat_{entity_type}",
-                title=entity["title"],
-                body_text=entity["narrative_text"],
-                metadata={"source_type": "leadrat_crm", "entity_type": entity_type, "entity_id": entity_row["id"]},
-                config=config,
-            )
-            seen_doc_ids.add(external_doc_id)
-            if current_docs.get(external_doc_id, {}).get("checksum") != document.get("checksum"):
-                chunk_count += _replace_document_chunks(
-                    source_id=source_id,
-                    document_id=document["id"],
-                    title=entity["title"],
-                    content=entity["narrative_text"],
-                    metadata={"source_type": "leadrat_crm", "entity_type": entity_type, "external_id": entity["external_id"]},
-                    config=config,
-                )
-            processed += 1
-            if total and (processed == total or processed % 25 == 0):
-                _update_sync_progress(source_id, phase=f"{entity_type}s", label=f"Indexing {entity_type} records...", processed=processed, total=total, item_type=f"{entity_type}s", job_id=job_id, config=config)
-
-    with _connect(config) as conn:
-        for external_id, row in current_docs.items():
-            if external_id not in seen_doc_ids:
-                conn.execute("DELETE FROM kb_documents WHERE id = ?", (str(row["id"]),))
-        for external_key, row in current_entities.items():
-            if external_key not in seen_entity_ids:
-                conn.execute("UPDATE kb_structured_entities SET is_active = 0, updated_at = ? WHERE id = ?", (_utcnow_iso(), str(row["id"])))
-        conn.commit()
-
-    finished_at = _utcnow_iso()
-    update_source(
-        source_id,
-        {
-            "status": "ready",
-            "sync_error": "",
-            "last_synced_at": finished_at,
-            "metadata": {
-                **(source.get("metadata") or {}),
-                "tenant": runtime["leadrat_tenant"],
-                "base_url": runtime["leadrat_base_url"],
-                "projects_count": len(projects),
-                "properties_count": len(properties),
-                "last_sync_started_at": started_at,
-                "last_sync_finished_at": finished_at,
-                "sync_progress": {
-                    "phase": "completed",
-                    "label": "LeadRat sync completed.",
-                    "processed": len(projects) + len(properties),
-                    "total": len(projects) + len(properties),
-                    "percent": 100,
-                    "item_type": "records",
-                    "updated_at": finished_at,
-                    **({"job_id": str(job_id)} if job_id is not None else {}),
-                },
-            },
-        },
-        config=config,
-    )
-    _reset_cache()
-    rebuild_index(config=config)
-    return {
-        "source_id": source_id,
-        "projects_count": len(projects),
-        "properties_count": len(properties),
-        "entity_count": entity_count,
-        "chunk_count": chunk_count,
-        "started_at": started_at,
-        "finished_at": finished_at,
-    }
+    return {**result, "finished_at": finished_at}
 
 
 def process_pending_jobs(config: dict | None = None, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -1798,13 +1386,10 @@ def process_pending_jobs(config: dict | None = None, *, limit: int = 5) -> list[
         job_id = job["id"]
         _update_job(job_id, {"status": "processing", "started_at": _utcnow_iso(), "attempts": parse_int(job.get("attempts"), 0) + 1, "error_text": ""}, config=config)
         try:
-            if str(job.get("source_type") or "").strip().lower() == "leadrat_crm":
-                result = sync_leadrat_source(config, job_id=job_id)
-            else:
-                source = get_source(job.get("source_id"), config=config)
-                if not source:
-                    raise RuntimeError(f"KB source {job.get('source_id')} was not found.")
-                result = _ingest_single_source(source, config=config)
+            source = get_source(job.get("source_id"), config=config)
+            if not source:
+                raise RuntimeError(f"KB source {job.get('source_id')} was not found.")
+            result = _ingest_single_source(source, config=config)
             _update_job(job_id, {"status": "completed", "finished_at": _utcnow_iso(), "last_result": result}, config=config)
             processed.append({"job_id": job_id, "status": "completed", "result": result})
         except Exception as exc:
@@ -1816,47 +1401,6 @@ def process_pending_jobs(config: dict | None = None, *, limit: int = 5) -> list[
     return processed
 
 
-def maybe_sync_leadrat(config: dict | None = None) -> dict[str, Any] | None:
-    runtime = get_runtime_config(config)
-    if not runtime["leadrat_enabled"]:
-        return None
-    source = ensure_leadrat_source(runtime)
-    last_synced_at = str(source.get("last_synced_at") or "").strip()
-    if last_synced_at:
-        try:
-            last_dt = datetime.fromisoformat(last_synced_at.replace("Z", "+00:00"))
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            if _utcnow() - last_dt < timedelta(minutes=runtime["leadrat_sync_interval_minutes"]):
-                return None
-        except Exception:
-            pass
-    pending = [
-        job for job in list_jobs(limit=50, config=runtime)
-        if str(job.get("source_type") or "") == "leadrat_crm" and str(job.get("status") or "") in {"pending", "processing"}
-    ]
-    if pending:
-        return pending[0]
-    return queue_job(source_id=source["id"], source_type="leadrat_crm", job_type="sync", payload={}, config=runtime)
-
-
-def _preprocess_entity_row(row: dict[str, Any]) -> dict[str, Any]:
-    narrative = str(row.get("narrative_text") or "").strip()
-    search_text = " ".join(
-        str(part or "")
-        for part in [
-            row.get("title"), row.get("serial_no"), row.get("project_name"), row.get("status"),
-            row.get("location_text"), row.get("bhk_text"), row.get("price_text"), row.get("possession_text"), narrative,
-        ]
-    ).strip()
-    row["_search_text"] = search_text
-    row["_search_norm"] = _normalize_text(search_text)
-    row["_tokens"] = _tokenize_keywords(search_text)
-    row["_embedding"] = _coerce_embedding(row.get("embedding")) or build_embedding(search_text)
-    row["_fact_block"] = _format_entity_fact_block(row)
-    return row
-
-
 def _preprocess_chunk_row(row: dict[str, Any]) -> dict[str, Any]:
     metadata = row.get("metadata") or {}
     search_text = " ".join(str(part or "") for part in [row.get("title"), row.get("content"), metadata.get("source_url")]).strip()
@@ -1865,17 +1409,6 @@ def _preprocess_chunk_row(row: dict[str, Any]) -> dict[str, Any]:
     row["_tokens"] = _tokenize_keywords(search_text)
     row["_embedding"] = _coerce_embedding(row.get("embedding")) or build_embedding(search_text)
     return row
-
-
-def _load_entities(config: dict | None = None) -> list[dict[str, Any]]:
-    runtime = get_runtime_config(config)
-
-    def fetcher() -> list[dict[str, Any]]:
-        with _connect(config) as conn:
-            rows = conn.execute("SELECT * FROM kb_structured_entities WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 50000").fetchall()
-        return [_preprocess_entity_row(_row_to_dict(row) or {}) for row in rows]
-
-    return _fetch_cached_rows("entities", fetcher, ttl=runtime["kb_cache_ttl_seconds"])
 
 
 def _load_chunks(config: dict | None = None) -> list[dict[str, Any]]:
@@ -1962,65 +1495,12 @@ def rebuild_index(config: dict | None = None) -> dict[str, Any]:
     return snapshot
 
 
-def is_inventory_query(query: str) -> bool:
-    normalized = _normalize_text(query)
-    if not normalized:
-        return False
-    tokens = set(_tokenize_keywords(normalized))
-    if tokens & KB_QUERY_HINTS:
-        return True
-    return bool(re.search(r"\b\d+\s*bhk\b", normalized))
-
-
 def is_kb_query(query: str) -> bool:
     normalized = _normalize_text(query)
     if not normalized:
         return False
     tokens = set(_tokenize_keywords(normalized))
     return bool(tokens & (KB_QUERY_HINTS | KB_TEXT_HINTS))
-
-
-def search_inventory(query: str, *, limit: int = 3, config: dict | None = None) -> list[dict[str, Any]]:
-    query_norm = _normalize_text(query)
-    query_tokens = _tokenize_keywords(query)
-    query_embedding = embed_texts([query], config=config, is_query=True)[0]
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for row in _load_entities(config):
-        score = 0.0
-        title_norm = _normalize_text(row.get("title"))
-        serial_norm = _normalize_text(row.get("serial_no"))
-        project_norm = _normalize_text(row.get("project_name"))
-        if query_norm and title_norm and query_norm == title_norm:
-            score += 5.0
-        elif query_norm and title_norm and query_norm in title_norm:
-            score += 3.2
-        if serial_norm and serial_norm in query_norm:
-            score += 6.0
-        if project_norm and project_norm in query_norm:
-            score += 1.8
-        score += _keyword_overlap_score(query_tokens, row["_tokens"]) * 3.6
-        score += max(0.0, _cosine_similarity(query_embedding, row["_embedding"])) * 2.6
-        if score >= 0.85:
-            scored.append((score, row))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [
-        {
-            "score": round(score, 4),
-            "entity_type": row.get("entity_type"),
-            "title": row.get("title"),
-            "serial_no": row.get("serial_no"),
-            "project_name": row.get("project_name"),
-            "status": row.get("status"),
-            "location_text": row.get("location_text"),
-            "bhk_text": row.get("bhk_text"),
-            "price_text": row.get("price_text"),
-            "possession_text": row.get("possession_text"),
-            "fact_block": row.get("_fact_block"),
-            "source": "leadrat_crm",
-            "last_synced_at": row.get("last_synced_at"),
-        }
-        for score, row in scored[:limit]
-    ]
 
 
 def _bm25_scores(query_tokens: list[str], index: dict[str, Any]) -> dict[int, float]:
@@ -2110,7 +1590,6 @@ def search_chunks(query: str, *, limit: int = 4, config: dict | None = None) -> 
                 "preview": _preview(row.get("content"), limit=340),
                 "source_type": metadata.get("source_type") or "unknown",
                 "source_url": metadata.get("source_url"),
-                "entity_type": metadata.get("entity_type"),
             }
         )
     return results
@@ -2118,45 +1597,35 @@ def search_chunks(query: str, *, limit: int = 4, config: dict | None = None) -> 
 
 def search_hybrid(query: str, *, config: dict | None = None) -> dict[str, Any]:
     runtime = get_runtime_config(config)
-    inventory_hits = search_inventory(query, limit=runtime["kb_inventory_top_k"], config=config)
-    descriptive_query = bool(set(_tokenize_keywords(query)) & KB_TEXT_HINTS)
-    chunk_hits = search_chunks(query, limit=runtime["kb_top_k"], config=config) if descriptive_query or not inventory_hits else []
-    return {"query": query, "inventory_hits": inventory_hits, "chunk_hits": chunk_hits}
+    chunk_hits = search_chunks(query, limit=runtime["kb_top_k"], config=config)
+    return {"query": query, "chunk_hits": chunk_hits}
 
 
 def build_grounding_text(query: str, *, config: dict | None = None) -> dict[str, Any] | None:
     runtime = get_runtime_config(config)
     if not runtime["kb_enabled"]:
         return None
-    if not is_kb_query(query) and not is_inventory_query(query):
+    if not is_kb_query(query):
         return None
 
     results = search_hybrid(query, config=config)
-    inventory_hits = results["inventory_hits"]
     chunk_hits = results["chunk_hits"]
-    if not inventory_hits and not chunk_hits:
+    if not chunk_hits:
         return {
             "query": query,
-            "inventory_hits": [],
             "chunk_hits": [],
             "grounding_text": (
-                "Knowledge base rule: this looks like a knowledge/inventory question, but there is no confirmed "
-                "match in the CRM or KB excerpts for this turn. Do not guess. Say you do not have confirmed information."
+                "Knowledge base rule: this looks like a knowledge-base question, but there is no confirmed "
+                "match in the PDF or website excerpts for this turn. Do not guess. Say you do not have confirmed information."
             ),
         }
 
     parts = [
         "Knowledge base grounding rules:",
-        "1. Prefer LeadRat CRM facts over PDFs, URLs, or notes if they differ.",
-        "2. Use only the confirmed facts below for this turn.",
-        "3. If the exact fact is missing below, say you do not have confirmed information.",
+        "1. Use only the confirmed PDF and website facts below for this turn.",
+        "2. If the exact fact is missing below, say you do not have confirmed information.",
         "",
     ]
-    if inventory_hits:
-        parts.append("LeadRat CRM results:")
-        for index, item in enumerate(inventory_hits, start=1):
-            parts.append(f"{index}. {item['fact_block']}")
-        parts.append("")
     if chunk_hits:
         parts.append("Knowledge excerpts:")
         for index, item in enumerate(chunk_hits, start=1):
@@ -2166,7 +1635,7 @@ def build_grounding_text(query: str, *, config: dict | None = None) -> dict[str,
     grounding_text = "\n".join(part for part in parts if part is not None).strip()
     if len(grounding_text) > runtime["kb_context_char_budget"]:
         grounding_text = grounding_text[: runtime["kb_context_char_budget"]].rstrip() + "..."
-    return {"query": query, "inventory_hits": inventory_hits, "chunk_hits": chunk_hits, "grounding_text": grounding_text}
+    return {"query": query, "chunk_hits": chunk_hits, "grounding_text": grounding_text}
 
 
 def search_for_agent(query: str, *, config: dict | None = None) -> dict[str, Any] | None:
@@ -2178,13 +1647,11 @@ def get_status(config: dict | None = None) -> dict[str, Any]:
     try:
         sources = list_sources(limit=200, config=config)
         jobs = list_jobs(limit=200, config=config)
-        entities = _load_entities(config)
         chunks = _load_chunks(config)
         index_status = _get_meta("index_status", {}, config=config)
     except Exception as exc:
         return kb_runtime_issue_payload(exc, config=config)
 
-    leadrat_source = next((row for row in sources if row.get("source_type") == "leadrat_crm"), None)
     index_status = index_status or {}
     return {
         "status": "ok",
@@ -2198,14 +1665,5 @@ def get_status(config: dict | None = None) -> dict[str, Any]:
         "index_status": index_status,
         "vector_count": index_status.get("vector_count", len(chunks)),
         "last_rebuild_at": index_status.get("rebuilt_at"),
-        "counts": {"sources": len(sources), "jobs": len(jobs), "entities": len(entities), "chunks": len(chunks)},
-        "leadrat": {
-            "enabled": runtime["leadrat_enabled"],
-            "tenant": runtime["leadrat_tenant"],
-            "sync_interval_minutes": runtime["leadrat_sync_interval_minutes"],
-            "source": leadrat_source,
-            "connected": bool(leadrat_source and leadrat_source.get("status") == "ready"),
-            "last_sync": leadrat_source.get("last_synced_at") if leadrat_source else None,
-            "records": len(entities),
-        },
+        "counts": {"sources": len(sources), "jobs": len(jobs), "chunks": len(chunks)},
     }

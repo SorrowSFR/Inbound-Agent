@@ -14,7 +14,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 - `GET /api/logs/{log_id}/transcript` returns `text/plain`, not JSON.
 - Most write endpoints return a wrapper like `{ "status": "ok", ... }`.
 - Most error payloads look like `{ "status": "error", "message": "..." }`.
-- KB endpoints may also return `status: "setup_required"` or `status: "not_configured"` when local/Supabase/LeadRat prerequisites are missing.
+- Setup and KB endpoints may return `status: "setup_required"` or `status: "not_configured"` when local or Supabase prerequisites are missing.
 
 ## Retained HTTP Surface
 
@@ -24,6 +24,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 - `GET /openapi.json`
 - `GET /api/config`
 - `POST /api/config`
+- `GET /api/setup/status`
 
 ### Calls and reporting
 
@@ -52,10 +53,6 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 - `POST /api/kb/upload`
 - `GET /api/kb/jobs`
 - `POST /api/kb/search`
-- `GET /api/kb/inventory/search`
-- `GET /api/kb/integrations/leadrat/status`
-- `POST /api/kb/integrations/leadrat/connect`
-- `POST /api/kb/integrations/leadrat/sync`
 
 ## Removed From This Branch
 
@@ -107,7 +104,6 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "kb_backend": "local_faiss",
     "kb_data_dir": "data/kb",
     "kb_top_k": 4,
-    "kb_inventory_top_k": 3,
     "kb_similarity_threshold": 0.18,
     "kb_context_char_budget": 2800,
     "kb_live_timeout_ms": 150,
@@ -122,13 +118,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "kb_paid_embedding_fallback_enabled": false,
     "kb_embedding_fallback_model": "gemini-embedding-001",
     "kb_index_kind": "flat_ip",
-    "kb_rerank_enabled": false,
-    "leadrat_enabled": false,
-    "leadrat_tenant": "",
-    "leadrat_api_key": "",
-    "leadrat_secret_key": "",
-    "leadrat_sync_interval_minutes": 5,
-    "leadrat_base_url": "https://connect.leadrat.com"
+    "kb_rerank_enabled": false
   }
 }
 ```
@@ -138,6 +128,25 @@ For the canonical config example, also inspect `config.example.json`.
 Secret-like fields are redacted in API responses as `********` when configured. Posting a redacted or blank secret value preserves the existing stored value; send `_clear_secrets` with an array of secret field names to explicitly clear them.
 
 Cost estimates use the Gemini 3.1 Flash Live native-audio rates published by Google: USD 0.005 per input-audio minute plus USD 0.018 per output-audio minute. The stored estimate uses call duration as a conservative blended approximation because the backend does not yet persist exact caller-vs-agent audio seconds.
+
+### Setup status
+
+`GET /api/setup/status` checks Supabase env and required table reachability.
+
+```json
+{
+  "status": "ok",
+  "message": "Supabase is configured and the required tables are reachable.",
+  "missing_env": [],
+  "missing_tables": [],
+  "schema_file": "sql/supabase/setup.sql",
+  "tables": {
+    "call_logs": { "ok": true }
+  }
+}
+```
+
+`status` can be `ok`, `not_configured`, `setup_required`, or `error`.
 
 ### Call log rows
 
@@ -239,7 +248,7 @@ Frontend implication:
   "id": "45",
   "created_at": "2026-04-26T10:30:00+00:00",
   "updated_at": "2026-04-26T10:35:00+00:00",
-  "title": "Site Visit",
+  "title": "Appointment",
   "contact_name": "Asha",
   "contact_phone": "+919999999999",
   "scheduled_start": "2026-04-27T11:00:00+05:30",
@@ -263,7 +272,7 @@ Status values in this branch:
 
 ```json
 {
-  "title": "Site Visit",
+  "title": "Appointment",
   "contact_name": "Asha",
   "contact_phone": "+919999999999",
   "scheduled_start": "2026-04-27T11:00:00+05:30",
@@ -344,17 +353,7 @@ Common appointment errors:
   "counts": {
     "sources": 4,
     "jobs": 12,
-    "entities": 40,
     "chunks": 18
-  },
-  "leadrat": {
-    "enabled": true,
-    "tenant": "tenant-name",
-    "sync_interval_minutes": 5,
-    "source": { "...kb source or null..." },
-    "connected": true,
-    "last_sync": "2026-04-26T09:55:00+00:00",
-    "records": 40
   }
 }
 ```
@@ -393,8 +392,8 @@ Supported source types used by the backend:
 
 - `web_url`
 - `pdf_upload`
-- `text_note`
-- `leadrat_crm`
+
+`web_url` can point at either a normal public page or a public sitemap URL. When a sitemap is provided, the backend crawls the listed same-site pages and indexes each extracted page as part of the source.
 
 ### Create KB source
 
@@ -414,9 +413,9 @@ or:
 
 ```json
 {
-  "source_type": "text_note",
-  "title": "Sales Script",
-  "raw_text": "Important approved talking points...",
+  "source_type": "web_url",
+  "title": "Company Sitemap",
+  "source_url": "https://example.com/sitemap.xml",
   "enabled": true,
   "metadata": {}
 }
@@ -437,7 +436,6 @@ Returns:
 
 - `title`
 - `source_url`
-- `raw_text`
 - `storage_bucket`
 - `storage_path`
 - `mime_type`
@@ -530,7 +528,6 @@ Returns:
   "status": "ok",
   "result": {
     "query": "What is the booking policy?",
-    "inventory_hits": [],
     "chunk_hits": [
       {
         "score": 2.71,
@@ -538,91 +535,15 @@ Returns:
         "content": "Full chunk text...",
         "preview": "Short preview...",
         "source_type": "web_url",
-        "source_url": "https://example.com/faq",
-        "entity_type": null
+        "source_url": "https://example.com/faq"
       }
     ]
   },
   "grounding": {
     "query": "What is the booking policy?",
-    "inventory_hits": [],
     "chunk_hits": [],
     "grounding_text": "Knowledge base grounding rules: ..."
   }
-}
-```
-
-### Inventory search
-
-`GET /api/kb/inventory/search?query=...` returns:
-
-```json
-{
-  "status": "ok",
-  "items": [
-    {
-      "score": 5.4,
-      "entity_type": "property",
-      "title": "Skyline Residency Unit 14B",
-      "serial_no": "PR0001",
-      "project_name": "Skyline Residency",
-      "status": "available",
-      "location_text": "Hyderabad",
-      "bhk_text": "3 BHK",
-      "price_text": "INR 1.2 Cr",
-      "possession_text": "Ready to move",
-      "fact_block": "Property facts ...",
-      "source": "leadrat_crm",
-      "last_synced_at": "2026-04-26T09:55:00+00:00"
-    }
-  ]
-}
-```
-
-### LeadRat integration
-
-`GET /api/kb/integrations/leadrat/status` returns either:
-
-```json
-{
-  "status": "ok",
-  "integration": {
-    "enabled": true,
-    "tenant": "tenant-name",
-    "sync_interval_minutes": 5,
-    "source": { "...or null..." },
-    "connected": true,
-    "last_sync": "2026-04-26T09:55:00+00:00",
-    "records": 40
-  }
-}
-```
-
-or a setup-oriented response:
-
-```json
-{
-  "status": "setup_required",
-  "integration": {},
-  "message": "..."
-}
-```
-
-`POST /api/kb/integrations/leadrat/connect` returns:
-
-```json
-{
-  "status": "ok",
-  "result": { "...validation result..." }
-}
-```
-
-`POST /api/kb/integrations/leadrat/sync` returns:
-
-```json
-{
-  "status": "ok",
-  "result": { "...sync result..." }
 }
 ```
 

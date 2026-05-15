@@ -162,7 +162,7 @@ async def async_create_booking(
 
         appointment = create_appointment(
             {
-                "title": "Site Visit",
+                "title": "Appointment",
                 "contact_name": caller_name or "Unknown Caller",
                 "contact_phone": caller_phone,
                 "scheduled_start": start_dt.isoformat(),

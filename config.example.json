@@ -29,7 +29,6 @@
   "kb_backend": "local_faiss",
   "kb_data_dir": "data/kb",
   "kb_top_k": 4,
-  "kb_inventory_top_k": 3,
   "kb_similarity_threshold": 0.18,
   "kb_context_char_budget": 2800,
   "kb_live_timeout_ms": 150,
@@ -44,11 +43,5 @@
   "kb_paid_embedding_fallback_enabled": false,
   "kb_embedding_fallback_model": "gemini-embedding-001",
   "kb_index_kind": "flat_ip",
-  "kb_rerank_enabled": false,
-  "leadrat_enabled": false,
-  "leadrat_tenant": "",
-  "leadrat_api_key": "",
-  "leadrat_secret_key": "",
-  "leadrat_sync_interval_minutes": 5,
-  "leadrat_base_url": "https://connect.leadrat.com"
+  "kb_rerank_enabled": false
 }

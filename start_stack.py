@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start the backend-only SPXAgent local stack.")
     parser.add_argument("--no-api", action="store_true", help="Skip the FastAPI backend API.")
     parser.add_argument("--no-agent", action="store_true", help="Skip the LiveKit voice agent worker.")
-    parser.add_argument("--no-kb-worker", action="store_true", help="Skip the knowledge-base ingestion and LeadRat sync worker.")
+    parser.add_argument("--no-kb-worker", action="store_true", help="Skip the knowledge-base ingestion worker.")
     parser.add_argument("--api-port", type=int, default=None, help="Preferred backend API port. Falls forward to the next free port if busy.")
     parser.add_argument("--agent-port", type=int, default=None, help="Preferred LiveKit worker health port. Falls forward to the next free port if busy.")
     return parser.parse_args()

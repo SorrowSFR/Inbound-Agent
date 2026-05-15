@@ -30,7 +30,7 @@ Run the setup script:
 ```powershell
 python setup_trunk.py
 ```
-*   **Success**: `✅ SIP Trunk updated successfully!`
+*   **Success**: `OK: SIP trunk updated successfully.`
 *   **Failure**: Check error message and verify `.env` values.
 
 This fixes common "Auth retry attempts reached" (500) errors by syncing your username/password to the LiveKit cloud.
