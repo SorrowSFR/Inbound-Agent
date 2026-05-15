@@ -142,6 +142,10 @@ def get_runtime_config(config: dict | None = None) -> dict[str, Any]:
         "kb_embedding_fallback_model": str(get_value("kb_embedding_fallback_model", "KB_EMBEDDING_FALLBACK_MODEL", "gemini-embedding-001") or "gemini-embedding-001").strip(),
         "kb_embedding_dimensions": max(16, parse_int(get_value("kb_embedding_dimensions", "KB_EMBEDDING_DIMENSIONS", KB_DEFAULT_EMBED_DIMENSIONS), KB_DEFAULT_EMBED_DIMENSIONS)),
         "google_api_key": str(get_value("google_api_key", "GOOGLE_API_KEY", "") or "").strip(),
+        "google_genai_use_vertexai": parse_bool(get_value("google_genai_use_vertexai", "GOOGLE_GENAI_USE_VERTEXAI", False), False),
+        "google_cloud_project": str(get_value("google_cloud_project", "GOOGLE_CLOUD_PROJECT", "") or "").strip(),
+        "google_cloud_location": str(get_value("google_cloud_location", "GOOGLE_CLOUD_LOCATION", "us-central1") or "us-central1").strip(),
+        "google_application_credentials": str(get_value("google_application_credentials", "GOOGLE_APPLICATION_CREDENTIALS", "") or "").strip(),
         "kb_index_kind": str(get_value("kb_index_kind", "KB_INDEX_KIND", "flat_ip") or "flat_ip").strip().lower(),
         "kb_rerank_enabled": parse_bool(get_value("kb_rerank_enabled", "KB_RERANK_ENABLED", False), False),
     }
@@ -469,13 +473,33 @@ def _normalize_vector(values: list[float], *, dimensions: int) -> list[float]:
     return _round_list(arr.tolist())
 
 
+def _google_genai_client_kwargs(runtime: dict[str, Any]) -> dict[str, Any] | None:
+    if runtime.get("google_genai_use_vertexai"):
+        credentials_path = str(runtime.get("google_application_credentials") or "").strip()
+        if credentials_path:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+        kwargs: dict[str, Any] = {"vertexai": True}
+        project = str(runtime.get("google_cloud_project") or "").strip()
+        location = str(runtime.get("google_cloud_location") or "us-central1").strip() or "us-central1"
+        if project:
+            kwargs["project"] = project
+        if location:
+            kwargs["location"] = location
+        return kwargs
+
+    api_key = str(runtime.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "") or "").strip()
+    if not api_key:
+        return None
+    return {"api_key": api_key}
+
+
 def _embed_texts_gemini(texts: list[str], *, config: dict | None = None, is_query: bool = False) -> list[list[float]] | None:
     global _GEMINI_EMBED_UNAVAILABLE_LOGGED
     runtime = get_runtime_config(config)
-    api_key = runtime.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")
-    if not str(api_key or "").strip():
+    client_kwargs = _google_genai_client_kwargs(runtime)
+    if client_kwargs is None:
         if not _GEMINI_EMBED_UNAVAILABLE_LOGGED:
-            logger.warning("[KB] Gemini embedding fallback is enabled, but GOOGLE_API_KEY is missing; using hashed fallback.")
+            logger.warning("[KB] Gemini embedding fallback is enabled, but GOOGLE_API_KEY is missing and Vertex AI is disabled; using hashed fallback.")
             _GEMINI_EMBED_UNAVAILABLE_LOGGED = True
         return None
     try:
@@ -495,7 +519,7 @@ def _embed_texts_gemini(texts: list[str], *, config: dict | None = None, is_quer
     dimensions = runtime["kb_embedding_dimensions"]
     task_type = "RETRIEVAL_QUERY" if is_query else "RETRIEVAL_DOCUMENT"
     try:
-        client = genai.Client(api_key=str(api_key).strip())
+        client = genai.Client(**client_kwargs)
 
         def request_embeddings(*, include_auto_truncate: bool):
             config_kwargs = {

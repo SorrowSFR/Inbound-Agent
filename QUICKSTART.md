@@ -8,7 +8,7 @@ Create `.env` from `.env.example` and fill in at least:
 - `LIVEKIT_API_KEY`
 - `LIVEKIT_API_SECRET`
 - `SIP_TRUNK_ID`
-- `GOOGLE_API_KEY`
+- `GOOGLE_API_KEY` for AI Studio mode, or `GOOGLE_GENAI_USE_VERTEXAI=true` with `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` for Vertex AI mode
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 

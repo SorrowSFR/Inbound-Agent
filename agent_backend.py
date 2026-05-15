@@ -239,6 +239,70 @@ def get_gemini_tts_voice_name(config: dict | None) -> str:
     return str((config or {}).get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
 
 
+def google_genai_uses_vertexai(config: dict | None) -> bool:
+    value = (config or {}).get("google_genai_use_vertexai")
+    if value in (None, ""):
+        value = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "")
+    return parse_bool(value, False)
+
+
+def get_google_cloud_project(config: dict | None) -> str:
+    return str((config or {}).get("google_cloud_project") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip()
+
+
+def get_google_cloud_location(config: dict | None) -> str:
+    return str((config or {}).get("google_cloud_location") or os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")).strip() or "us-central1"
+
+
+def get_google_api_key(config: dict | None) -> str:
+    return str((config or {}).get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+
+
+def _apply_google_application_credentials(config: dict | None) -> None:
+    credentials_path = str(
+        (config or {}).get("google_application_credentials")
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    ).strip()
+    if credentials_path:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+
+
+def build_google_genai_client_kwargs(config: dict | None, *, purpose: str) -> dict:
+    if google_genai_uses_vertexai(config):
+        _apply_google_application_credentials(config)
+        kwargs: dict[str, object] = {"vertexai": True}
+        project = get_google_cloud_project(config)
+        location = get_google_cloud_location(config)
+        if project:
+            kwargs["project"] = project
+        if location:
+            kwargs["location"] = location
+        logger.info("[VOICE] Using Vertex AI for %s project=%s location=%s", purpose, project or "<adc>", location)
+        return kwargs
+
+    api_key = get_google_api_key(config)
+    if not api_key:
+        raise RuntimeError(f"Missing GOOGLE_API_KEY for {purpose}.")
+    return {"api_key": api_key}
+
+
+def build_google_realtime_auth_kwargs(config: dict | None) -> dict:
+    if google_genai_uses_vertexai(config):
+        _apply_google_application_credentials(config)
+        kwargs: dict[str, object] = {"vertexai": True}
+        project = get_google_cloud_project(config)
+        location = get_google_cloud_location(config)
+        if project:
+            kwargs["project"] = project
+        if location:
+            kwargs["location"] = location
+        return kwargs
+    api_key = get_google_api_key(config)
+    if not api_key:
+        raise RuntimeError("Missing GOOGLE_API_KEY for Gemini Live.")
+    return {"api_key": api_key}
+
+
 def _get_gemini_tts_lock(cache_key: tuple[str, str, str]) -> threading.Lock:
     with _gemini_tts_locks_guard:
         lock = _gemini_tts_locks.get(cache_key)
@@ -392,15 +456,12 @@ def synthesize_gemini_tts_pcm(text: str, live_config: dict | None, *, purpose: s
         if google_genai is None or google_genai_types is None:
             raise RuntimeError("google-genai is required for Gemini TTS fallback")
 
-        api_key = str(config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-        if not api_key:
-            raise RuntimeError("Missing GOOGLE_API_KEY for Gemini TTS fallback")
         prompt = (
             "Say in a warm, natural Indian phone-call tone. Speak exactly the quoted text and do not "
             f"add, remove, or replace words: {json.dumps(str(text), ensure_ascii=False)}"
         )
         logger.info("[VOICE] Generating Gemini TTS once for %s", purpose)
-        client = google_genai.Client(api_key=api_key)
+        client = google_genai.Client(**build_google_genai_client_kwargs(config, purpose="Gemini TTS fallback"))
         response = client.models.generate_content(
             model=model_name,
             contents=prompt,
@@ -473,8 +534,7 @@ async def say_with_gemini_tts(
 def prefetch_gemini_tts(live_config: dict, text: str, *, purpose: str) -> None:
     if not text or google_genai is None or google_genai_types is None:
         return
-    api_key = str(live_config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-    if not api_key:
+    if not google_genai_uses_vertexai(live_config) and not get_google_api_key(live_config):
         return
     tasks = live_config.setdefault("_gemini_tts_prefetch_tasks", {})
     if not isinstance(tasks, dict) or purpose in tasks:
@@ -488,10 +548,6 @@ def build_gemini_realtime_model(live_config: dict):
         raise RuntimeError(
             "Gemini Live requires livekit-plugins-google and google-genai. Install the updated requirements."
         )
-
-    api_key = str(live_config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-    if not api_key:
-        raise RuntimeError("Missing GOOGLE_API_KEY for Gemini Live.")
 
     model_name = get_gemini_live_model_name(live_config)
     voice_name = str(live_config.get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
@@ -511,11 +567,12 @@ def build_gemini_realtime_model(live_config: dict):
     )
 
     logger.info(
-        "[VOICE] Gemini Live model=%s voice=%s temperature=%s language=%s input_transcript=%s output_transcript=%s",
+        "[VOICE] Gemini Live model=%s voice=%s temperature=%s language=%s auth=%s input_transcript=%s output_transcript=%s",
         model_name,
         voice_name,
         temperature,
         language,
+        "vertexai" if google_genai_uses_vertexai(live_config) else "api_key",
         input_transcription_enabled,
         output_transcription_enabled,
     )
@@ -524,7 +581,6 @@ def build_gemini_realtime_model(live_config: dict):
 
     kwargs = {
         "model": model_name,
-        "api_key": api_key,
         "voice": voice_name,
         "temperature": temperature,
         "realtime_input_config": realtime_input_config,
@@ -534,6 +590,7 @@ def build_gemini_realtime_model(live_config: dict):
             timeout=max(5.0, parse_float(live_config.get("gemini_live_connect_timeout"), DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT)),
         ),
     }
+    kwargs.update(build_google_realtime_auth_kwargs(live_config))
     if input_transcription_enabled:
         kwargs["input_audio_transcription"] = google_genai_types.AudioTranscriptionConfig()
     if output_transcription_enabled:
@@ -550,11 +607,6 @@ async def preflight_gemini_live_connection(live_config: dict) -> bool:
         logger.warning("[VOICE] Gemini Live preflight skipped because google-genai is not installed")
         return False
 
-    api_key = str(live_config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-    if not api_key:
-        logger.warning("[VOICE] Gemini Live preflight failed because GOOGLE_API_KEY is missing")
-        return False
-
     model_name = get_gemini_live_model_name(live_config)
     voice_name = str(live_config.get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
     language = str(live_config.get("gemini_live_language") or "").strip()
@@ -564,7 +616,7 @@ async def preflight_gemini_live_connection(live_config: dict) -> bool:
     )
 
     async def _connect_once() -> bool:
-        client = google_genai.Client(api_key=api_key)
+        client = google_genai.Client(**build_google_genai_client_kwargs(live_config, purpose="Gemini Live preflight"))
         session_kwargs = {
             "model": model_name,
             "config": {"response_modalities": ["AUDIO"], "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": voice_name}}}},

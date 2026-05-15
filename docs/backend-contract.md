@@ -96,6 +96,10 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "livekit_api_secret": "",
     "sip_trunk_id": "",
     "google_api_key": "",
+    "google_genai_use_vertexai": false,
+    "google_cloud_project": "",
+    "google_cloud_location": "us-central1",
+    "google_application_credentials": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "supabase_url": "",
@@ -126,6 +130,8 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 For the canonical config example, also inspect `config.example.json`.
 
 Secret-like fields are redacted in API responses as `********` when configured. Posting a redacted or blank secret value preserves the existing stored value; send `_clear_secrets` with an array of secret field names to explicitly clear them.
+
+Set `google_genai_use_vertexai` to `true` to use Vertex AI authentication instead of an AI Studio API key. In Vertex mode the backend passes `vertexai=True`, `google_cloud_project`, and `google_cloud_location` to the Google GenAI and LiveKit Google clients, and uses ADC or `google_application_credentials` for credentials.
 
 Cost estimates use the Gemini 3.1 Flash Live native-audio rates published by Google: USD 0.005 per input-audio minute plus USD 0.018 per output-audio minute. The stored estimate uses call duration as a conservative blended approximation because the backend does not yet persist exact caller-vs-agent audio seconds.
 

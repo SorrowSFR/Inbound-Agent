@@ -21,6 +21,7 @@ DEFAULT_GEMINI_LIVE_CONNECT_RETRIES = 2
 DEFAULT_GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED = True
 DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED = False
+DEFAULT_GOOGLE_CLOUD_LOCATION = "us-central1"
 DEFAULT_FIRST_LINE = (
     "Namaste! This is Aryan from SPX AI - we help businesses automate with AI. "
     "Hmm, may I ask what kind of business you run?"
@@ -31,6 +32,7 @@ SECRET_CONFIG_KEYS = frozenset(
         "livekit_api_key",
         "livekit_api_secret",
         "google_api_key",
+        "google_application_credentials",
         "telegram_bot_token",
         "supabase_key",
         "leadrat_api_key",
@@ -62,6 +64,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "livekit_api_secret": "",
     "sip_trunk_id": "",
     "google_api_key": "",
+    "google_genai_use_vertexai": False,
+    "google_cloud_project": "",
+    "google_cloud_location": DEFAULT_GOOGLE_CLOUD_LOCATION,
+    "google_application_credentials": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "supabase_url": "",
@@ -112,6 +118,10 @@ ENV_KEY_MAP = {
     "livekit_api_secret": "LIVEKIT_API_SECRET",
     "sip_trunk_id": "SIP_TRUNK_ID",
     "google_api_key": "GOOGLE_API_KEY",
+    "google_genai_use_vertexai": "GOOGLE_GENAI_USE_VERTEXAI",
+    "google_cloud_project": "GOOGLE_CLOUD_PROJECT",
+    "google_cloud_location": "GOOGLE_CLOUD_LOCATION",
+    "google_application_credentials": "GOOGLE_APPLICATION_CREDENTIALS",
     "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id": "TELEGRAM_CHAT_ID",
     "supabase_url": "SUPABASE_URL",
@@ -186,7 +196,7 @@ def _is_secret_placeholder(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
         return True
-    return text == SECRET_MASK or set(text) <= {"*", "•"}
+    return text == SECRET_MASK or set(text) <= {"*"}
 
 
 def redact_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -260,6 +270,10 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "livekit_api_secret": str(raw.get("livekit_api_secret") or "").strip(),
         "sip_trunk_id": str(raw.get("sip_trunk_id") or "").strip(),
         "google_api_key": str(raw.get("google_api_key") or "").strip(),
+        "google_genai_use_vertexai": parse_bool(raw.get("google_genai_use_vertexai"), False),
+        "google_cloud_project": str(raw.get("google_cloud_project") or "").strip(),
+        "google_cloud_location": str(raw.get("google_cloud_location") or DEFAULT_GOOGLE_CLOUD_LOCATION).strip() or DEFAULT_GOOGLE_CLOUD_LOCATION,
+        "google_application_credentials": str(raw.get("google_application_credentials") or "").strip(),
         "telegram_bot_token": str(raw.get("telegram_bot_token") or "").strip(),
         "telegram_chat_id": str(raw.get("telegram_chat_id") or "").strip(),
         "supabase_url": str(raw.get("supabase_url") or "").strip(),
