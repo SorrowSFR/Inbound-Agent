@@ -19,6 +19,7 @@ from backend_config import (
     apply_config_env,
     parse_int,
     read_config,
+    redact_config,
     write_config,
 )
 from backend_events import (
@@ -168,7 +169,7 @@ def _timestamp_rank(value: str | None) -> float:
 
 @app.get("/api/config")
 async def api_get_config():
-    return read_config()
+    return redact_config(read_config())
 
 
 @app.post("/api/config")
@@ -177,7 +178,7 @@ async def api_post_config(request: Request):
     updated = write_config(data)
     apply_config_env(updated)
     logger.info("Configuration updated via backend API.")
-    return {"status": "ok", "config": updated}
+    return {"status": "ok", "config": redact_config(updated)}
 
 
 @app.get("/api/logs")

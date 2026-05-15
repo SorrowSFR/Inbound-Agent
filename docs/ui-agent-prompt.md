@@ -171,6 +171,7 @@ Build the app around these primary sections:
 - Avoid over-fetching and avoid fragile state handling.
 - Use reusable layout and data-display patterns across the app.
 - Keep secrets out of logs and avoid exposing secret values more than necessary in the UI.
+- Treat `********` secret values from `/api/config` as "already configured"; do not send them back as new secrets, and leave blank secret inputs unchanged unless the user explicitly clears them.
 - Prefer composable dialogs, drawers, or modals for create/edit actions when that improves usability.
 
 ## Deliverables

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -106,6 +108,7 @@ from backend_config import (
 )
 from backend_events import handle_call_no_booking
 from calendar_tools import async_create_booking, get_available_slots
+from runtime_env import get_app_data_dir
 
 DEFAULT_GEMINI_TTS_SAMPLE_RATE = 24000
 DEFAULT_AGENT_NAME = "outbound-caller"
@@ -116,6 +119,8 @@ _caller_history_cache: dict[str, tuple[float, dict[str, str]]] = {}
 CALLER_HISTORY_CACHE_TTL = 300.0
 RATE_LIMIT_CALLS = 5
 RATE_LIMIT_WINDOW = 3600
+GEMINI_3_1_FLASH_LIVE_INPUT_AUDIO_PER_MIN_USD = 0.005
+GEMINI_3_1_FLASH_LIVE_OUTPUT_AUDIO_PER_MIN_USD = 0.018
 
 LANGUAGE_PRESETS = {
     "hinglish": {
@@ -184,7 +189,11 @@ FILLER_WORDS = {
 }
 
 _gemini_tts_cache: dict[tuple[str, str, str], bytes] = {}
+_gemini_tts_cache_guard = threading.Lock()
+_gemini_tts_locks: dict[tuple[str, str, str], threading.Lock] = {}
+_gemini_tts_locks_guard = threading.Lock()
 _GEMINI_TTS_CACHE_MAX = 8
+_GEMINI_TTS_DISK_CACHE_VERSION = "v1"
 
 
 def is_rate_limited(phone: str) -> bool:
@@ -228,6 +237,92 @@ def get_gemini_tts_model_name(config: dict | None) -> str:
 
 def get_gemini_tts_voice_name(config: dict | None) -> str:
     return str((config or {}).get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
+
+
+def _get_gemini_tts_lock(cache_key: tuple[str, str, str]) -> threading.Lock:
+    with _gemini_tts_locks_guard:
+        lock = _gemini_tts_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _gemini_tts_locks[cache_key] = lock
+        return lock
+
+
+def _gemini_tts_cache_dir(config: dict | None) -> Path:
+    raw = str(os.environ.get("GEMINI_TTS_CACHE_DIR", "") or "").strip()
+    cache_dir = Path(raw).expanduser() if raw else get_app_data_dir() / "gemini_tts_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _gemini_tts_cache_path(cache_key: tuple[str, str, str], config: dict | None) -> Path:
+    text, model_name, voice_name = cache_key
+    payload = json.dumps(
+        {
+            "version": _GEMINI_TTS_DISK_CACHE_VERSION,
+            "text": text,
+            "model": model_name,
+            "voice": voice_name,
+            "sample_rate": DEFAULT_GEMINI_TTS_SAMPLE_RATE,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return _gemini_tts_cache_dir(config) / f"{digest}.pcm"
+
+
+def _remember_gemini_tts_cache(cache_key: tuple[str, str, str], pcm: bytes) -> None:
+    with _gemini_tts_cache_guard:
+        if len(_gemini_tts_cache) >= _GEMINI_TTS_CACHE_MAX and cache_key not in _gemini_tts_cache:
+            _gemini_tts_cache.pop(next(iter(_gemini_tts_cache)), None)
+        _gemini_tts_cache[cache_key] = pcm
+
+
+def _load_gemini_tts_cache(cache_key: tuple[str, str, str], config: dict | None, *, purpose: str) -> bytes | None:
+    with _gemini_tts_cache_guard:
+        cached = _gemini_tts_cache.get(cache_key)
+    if cached:
+        logger.info("[VOICE] Gemini TTS memory cache hit for %s", purpose)
+        return cached
+
+    path = _gemini_tts_cache_path(cache_key, config)
+    try:
+        pcm = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning("[VOICE] Could not read Gemini TTS cache %s: %s", path, exc)
+        return None
+    if not pcm:
+        return None
+    _remember_gemini_tts_cache(cache_key, pcm)
+    logger.info("[VOICE] Gemini TTS disk cache hit for %s", purpose)
+    return pcm
+
+
+def _store_gemini_tts_cache(cache_key: tuple[str, str, str], config: dict | None, pcm: bytes) -> None:
+    _remember_gemini_tts_cache(cache_key, pcm)
+    path = _gemini_tts_cache_path(cache_key, config)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp_path.write_bytes(pcm)
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        logger.warning("[VOICE] Could not write Gemini TTS cache %s: %s", path, exc)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def estimate_gemini_live_cost_usd(duration_seconds: int | float) -> float:
+    minutes = max(0.0, float(duration_seconds or 0.0) / 60.0)
+    blended_audio_rate = (
+        GEMINI_3_1_FLASH_LIVE_INPUT_AUDIO_PER_MIN_USD
+        + GEMINI_3_1_FLASH_LIVE_OUTPUT_AUDIO_PER_MIN_USD
+    )
+    return round(minutes * blended_audio_rate, 5)
 
 
 def get_opening_greeting(config: dict | None, first_line: str | None = None) -> str:
@@ -280,47 +375,49 @@ def _extract_gemini_tts_pcm(response: object) -> bytes:
 
 
 def synthesize_gemini_tts_pcm(text: str, live_config: dict | None, *, purpose: str) -> bytes:
-    if google_genai is None or google_genai_types is None:
-        raise RuntimeError("google-genai is required for Gemini TTS fallback")
-
     config = live_config or {}
-    api_key = str(config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
-    if not api_key:
-        raise RuntimeError("Missing GOOGLE_API_KEY for Gemini TTS fallback")
-
     model_name = get_gemini_tts_model_name(config)
     voice_name = get_gemini_tts_voice_name(config)
-    cache_key = (text, model_name, voice_name)
-    cached = _gemini_tts_cache.get(cache_key)
+    cache_key = (str(text or ""), model_name, voice_name)
+    cached = _load_gemini_tts_cache(cache_key, config, purpose=purpose)
     if cached:
-        logger.info("[VOICE] Gemini TTS cache hit for %s", purpose)
         return cached
 
-    prompt = (
-        "Say in a warm, natural Indian phone-call tone. Speak exactly the quoted text and do not "
-        f"add, remove, or replace words: {json.dumps(str(text), ensure_ascii=False)}"
-    )
-    logger.info("[VOICE] Generating Gemini TTS for %s", purpose)
-    client = google_genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=google_genai_types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=google_genai_types.SpeechConfig(
-                voice_config=google_genai_types.VoiceConfig(
-                    prebuilt_voice_config=google_genai_types.PrebuiltVoiceConfig(
-                        voice_name=voice_name,
+    lock = _get_gemini_tts_lock(cache_key)
+    with lock:
+        cached = _load_gemini_tts_cache(cache_key, config, purpose=purpose)
+        if cached:
+            return cached
+
+        if google_genai is None or google_genai_types is None:
+            raise RuntimeError("google-genai is required for Gemini TTS fallback")
+
+        api_key = str(config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+        if not api_key:
+            raise RuntimeError("Missing GOOGLE_API_KEY for Gemini TTS fallback")
+        prompt = (
+            "Say in a warm, natural Indian phone-call tone. Speak exactly the quoted text and do not "
+            f"add, remove, or replace words: {json.dumps(str(text), ensure_ascii=False)}"
+        )
+        logger.info("[VOICE] Generating Gemini TTS once for %s", purpose)
+        client = google_genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=google_genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=google_genai_types.SpeechConfig(
+                    voice_config=google_genai_types.VoiceConfig(
+                        prebuilt_voice_config=google_genai_types.PrebuiltVoiceConfig(
+                            voice_name=voice_name,
+                        )
                     )
-                )
+                ),
             ),
-        ),
-    )
-    pcm = _extract_gemini_tts_pcm(response)
-    if len(_gemini_tts_cache) >= _GEMINI_TTS_CACHE_MAX:
-        _gemini_tts_cache.pop(next(iter(_gemini_tts_cache)), None)
-    _gemini_tts_cache[cache_key] = pcm
-    return pcm
+        )
+        pcm = _extract_gemini_tts_pcm(response)
+        _store_gemini_tts_cache(cache_key, config, pcm)
+        return pcm
 
 
 async def pcm_to_audio_frames(
@@ -400,6 +497,8 @@ def build_gemini_realtime_model(live_config: dict):
     voice_name = str(live_config.get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
     temperature = max(0.0, min(2.0, parse_float(live_config.get("gemini_live_temperature"), DEFAULT_GEMINI_LIVE_TEMPERATURE)))
     language = str(live_config.get("gemini_live_language") or "").strip()
+    input_transcription_enabled = parse_bool(live_config.get("gemini_live_input_transcription_enabled"), True)
+    output_transcription_enabled = parse_bool(live_config.get("gemini_live_output_transcription_enabled"), False)
 
     realtime_input_config = google_genai_types.RealtimeInputConfig(
         automatic_activity_detection=google_genai_types.AutomaticActivityDetection(
@@ -412,11 +511,13 @@ def build_gemini_realtime_model(live_config: dict):
     )
 
     logger.info(
-        "[VOICE] Gemini Live model=%s voice=%s temperature=%s language=%s",
+        "[VOICE] Gemini Live model=%s voice=%s temperature=%s language=%s input_transcript=%s output_transcript=%s",
         model_name,
         voice_name,
         temperature,
         language,
+        input_transcription_enabled,
+        output_transcription_enabled,
     )
     if not gemini_live_supports_scripted_generation(live_config):
         logger.info("[VOICE] Fixed greetings and wrap-ups will use Gemini TTS fallback for this model.")
@@ -426,8 +527,6 @@ def build_gemini_realtime_model(live_config: dict):
         "api_key": api_key,
         "voice": voice_name,
         "temperature": temperature,
-        "input_audio_transcription": google_genai_types.AudioTranscriptionConfig(),
-        "output_audio_transcription": google_genai_types.AudioTranscriptionConfig(),
         "realtime_input_config": realtime_input_config,
         "conn_options": APIConnectOptions(
             max_retry=max(0, parse_int(live_config.get("gemini_live_connect_retries"), DEFAULT_GEMINI_LIVE_CONNECT_RETRIES)),
@@ -435,6 +534,10 @@ def build_gemini_realtime_model(live_config: dict):
             timeout=max(5.0, parse_float(live_config.get("gemini_live_connect_timeout"), DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT)),
         ),
     }
+    if input_transcription_enabled:
+        kwargs["input_audio_transcription"] = google_genai_types.AudioTranscriptionConfig()
+    if output_transcription_enabled:
+        kwargs["output_audio_transcription"] = google_genai_types.AudioTranscriptionConfig()
     if language:
         kwargs["language"] = language
     return google_plugin.realtime.RealtimeModel(**kwargs)
@@ -1257,7 +1360,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 config=live_config,
             )
 
-        estimated_cost = round((duration / 60) * 0.008 + (len(transcript_text) / 1000) * 0.003, 5)
+        estimated_cost = estimate_gemini_live_cost_usd(duration)
         call_dt = call_start_time.astimezone(_IST)
 
         recording_url = ""

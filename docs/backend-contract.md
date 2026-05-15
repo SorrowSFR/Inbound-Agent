@@ -87,6 +87,8 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "gemini_live_preflight_timeout": 6.0,
     "gemini_live_connect_timeout": 20.0,
     "gemini_live_connect_retries": 2,
+    "gemini_live_input_transcription_enabled": true,
+    "gemini_live_output_transcription_enabled": false,
     "gemini_tts_model": "gemini-3.1-flash-tts-preview",
     "lang_preset": "multilingual",
     "max_turns": 25,
@@ -117,6 +119,7 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "kb_embedding_provider": "local",
     "kb_embedding_model": "BAAI/bge-small-en-v1.5",
     "kb_embedding_fallback_provider": "gemini",
+    "kb_paid_embedding_fallback_enabled": false,
     "kb_embedding_fallback_model": "gemini-embedding-001",
     "kb_index_kind": "flat_ip",
     "kb_rerank_enabled": false,
@@ -131,6 +134,10 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
 ```
 
 For the canonical config example, also inspect `config.example.json`.
+
+Secret-like fields are redacted in API responses as `********` when configured. Posting a redacted or blank secret value preserves the existing stored value; send `_clear_secrets` with an array of secret field names to explicitly clear them.
+
+Cost estimates use the Gemini 3.1 Flash Live native-audio rates published by Google: USD 0.005 per input-audio minute plus USD 0.018 per output-audio minute. The stored estimate uses call duration as a conservative blended approximation because the backend does not yet persist exact caller-vs-agent audio seconds.
 
 ### Call log rows
 

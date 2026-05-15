@@ -137,6 +137,7 @@ def get_runtime_config(config: dict | None = None) -> dict[str, Any]:
         "kb_embedding_provider": str(get_value("kb_embedding_provider", "KB_EMBEDDING_PROVIDER", "local") or "local").strip().lower(),
         "kb_embedding_model": str(get_value("kb_embedding_model", "KB_EMBEDDING_MODEL", KB_DEFAULT_EMBED_MODEL) or KB_DEFAULT_EMBED_MODEL).strip(),
         "kb_embedding_fallback_provider": str(get_value("kb_embedding_fallback_provider", "KB_EMBEDDING_FALLBACK_PROVIDER", "gemini") or "gemini").strip().lower(),
+        "kb_paid_embedding_fallback_enabled": parse_bool(get_value("kb_paid_embedding_fallback_enabled", "KB_PAID_EMBEDDING_FALLBACK_ENABLED", False), False),
         "kb_embedding_fallback_model": str(get_value("kb_embedding_fallback_model", "KB_EMBEDDING_FALLBACK_MODEL", "gemini-embedding-001") or "gemini-embedding-001").strip(),
         "kb_embedding_dimensions": max(16, parse_int(get_value("kb_embedding_dimensions", "KB_EMBEDDING_DIMENSIONS", KB_DEFAULT_EMBED_DIMENSIONS), KB_DEFAULT_EMBED_DIMENSIONS)),
         "google_api_key": str(get_value("google_api_key", "GOOGLE_API_KEY", "") or "").strip(),
@@ -570,6 +571,7 @@ def embed_texts(texts: list[str], *, config: dict | None = None, is_query: bool 
     dimensions = runtime["kb_embedding_dimensions"]
     provider = runtime["kb_embedding_provider"]
     fallback_provider = runtime["kb_embedding_fallback_provider"]
+    paid_fallback_enabled = bool(runtime["kb_paid_embedding_fallback_enabled"])
     if provider == "local":
         model = _get_fastembed_model(runtime["kb_embedding_model"], config=config)
         if model is not None:
@@ -586,11 +588,11 @@ def embed_texts(texts: list[str], *, config: dict | None = None, is_query: bool 
                 return result
             except Exception as exc:
                 logger.warning(f"[KB] Local embedding failed; trying configured fallback: {exc}")
-        if fallback_provider == "gemini":
+        if fallback_provider == "gemini" and paid_fallback_enabled:
             gemini_vectors = _embed_texts_gemini(texts, config=config, is_query=is_query)
             if gemini_vectors is not None:
                 return gemini_vectors
-    if provider == "gemini" or (provider == "api" and fallback_provider == "gemini"):
+    if provider == "gemini" or (provider == "api" and fallback_provider == "gemini" and paid_fallback_enabled):
         gemini_vectors = _embed_texts_gemini(texts, config=config, is_query=is_query)
         if gemini_vectors is not None:
             return gemini_vectors

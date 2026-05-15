@@ -19,10 +19,25 @@ DEFAULT_GEMINI_LIVE_PREFLIGHT_TIMEOUT = 6.0
 DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT = 20.0
 DEFAULT_GEMINI_LIVE_CONNECT_RETRIES = 2
 DEFAULT_GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED = True
+DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED = False
 DEFAULT_FIRST_LINE = (
     "Namaste! This is Aryan from SPX AI - we help businesses automate with AI. "
     "Hmm, may I ask what kind of business you run?"
 )
+
+SECRET_CONFIG_KEYS = frozenset(
+    {
+        "livekit_api_key",
+        "livekit_api_secret",
+        "google_api_key",
+        "telegram_bot_token",
+        "supabase_key",
+        "leadrat_api_key",
+        "leadrat_secret_key",
+    }
+)
+SECRET_MASK = "********"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "first_line": DEFAULT_FIRST_LINE,
@@ -35,6 +50,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gemini_live_preflight_timeout": DEFAULT_GEMINI_LIVE_PREFLIGHT_TIMEOUT,
     "gemini_live_connect_timeout": DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT,
     "gemini_live_connect_retries": DEFAULT_GEMINI_LIVE_CONNECT_RETRIES,
+    "gemini_live_input_transcription_enabled": DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED,
+    "gemini_live_output_transcription_enabled": DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED,
     "gemini_tts_model": DEFAULT_GEMINI_TTS_MODEL,
     "lang_preset": "multilingual",
     "max_turns": 25,
@@ -65,6 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "kb_embedding_provider": "local",
     "kb_embedding_model": "BAAI/bge-small-en-v1.5",
     "kb_embedding_fallback_provider": "gemini",
+    "kb_paid_embedding_fallback_enabled": False,
     "kb_embedding_fallback_model": "gemini-embedding-001",
     "kb_index_kind": "flat_ip",
     "kb_rerank_enabled": False,
@@ -89,6 +107,8 @@ ENV_KEY_MAP = {
     "gemini_live_preflight_timeout": "GEMINI_LIVE_PREFLIGHT_TIMEOUT",
     "gemini_live_connect_timeout": "GEMINI_LIVE_CONNECT_TIMEOUT",
     "gemini_live_connect_retries": "GEMINI_LIVE_CONNECT_RETRIES",
+    "gemini_live_input_transcription_enabled": "GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED",
+    "gemini_live_output_transcription_enabled": "GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED",
     "gemini_tts_model": "GEMINI_TTS_MODEL",
     "lang_preset": "LANG_PRESET",
     "max_turns": "MAX_TURNS",
@@ -119,6 +139,7 @@ ENV_KEY_MAP = {
     "kb_embedding_provider": "KB_EMBEDDING_PROVIDER",
     "kb_embedding_model": "KB_EMBEDDING_MODEL",
     "kb_embedding_fallback_provider": "KB_EMBEDDING_FALLBACK_PROVIDER",
+    "kb_paid_embedding_fallback_enabled": "KB_PAID_EMBEDDING_FALLBACK_ENABLED",
     "kb_embedding_fallback_model": "KB_EMBEDDING_FALLBACK_MODEL",
     "kb_index_kind": "KB_INDEX_KIND",
     "kb_rerank_enabled": "KB_RERANK_ENABLED",
@@ -175,6 +196,22 @@ def _load_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _is_secret_placeholder(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    return text == SECRET_MASK or set(text) <= {"*", "•"}
+
+
+def redact_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    redacted = dict(config or {})
+    for key in SECRET_CONFIG_KEYS:
+        configured = bool(str(redacted.get(key) or "").strip())
+        redacted[key] = SECRET_MASK if configured else ""
+        redacted[f"{key}_configured"] = configured
+    return redacted
+
+
 def _normalized_phone_suffix(phone_number: str | None) -> str:
     raw = str(phone_number or "").strip()
     if not raw or raw == "unknown":
@@ -225,6 +262,8 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "gemini_live_preflight_timeout": max(1.0, min(20.0, parse_float(raw.get("gemini_live_preflight_timeout"), DEFAULT_GEMINI_LIVE_PREFLIGHT_TIMEOUT))),
         "gemini_live_connect_timeout": max(5.0, min(60.0, parse_float(raw.get("gemini_live_connect_timeout"), DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT))),
         "gemini_live_connect_retries": max(0, min(10, parse_int(raw.get("gemini_live_connect_retries"), DEFAULT_GEMINI_LIVE_CONNECT_RETRIES))),
+        "gemini_live_input_transcription_enabled": parse_bool(raw.get("gemini_live_input_transcription_enabled"), DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED),
+        "gemini_live_output_transcription_enabled": parse_bool(raw.get("gemini_live_output_transcription_enabled"), DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED),
         "gemini_tts_model": str(raw.get("gemini_tts_model") or DEFAULT_GEMINI_TTS_MODEL).strip() or DEFAULT_GEMINI_TTS_MODEL,
         "lang_preset": str(raw.get("lang_preset") or "multilingual").strip() or "multilingual",
         "max_turns": max(1, parse_int(raw.get("max_turns"), 25)),
@@ -255,6 +294,7 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "kb_embedding_provider": str(raw.get("kb_embedding_provider") or "local").strip().lower() or "local",
         "kb_embedding_model": str(raw.get("kb_embedding_model") or "BAAI/bge-small-en-v1.5").strip() or "BAAI/bge-small-en-v1.5",
         "kb_embedding_fallback_provider": str(raw.get("kb_embedding_fallback_provider") or "gemini").strip().lower() or "gemini",
+        "kb_paid_embedding_fallback_enabled": parse_bool(raw.get("kb_paid_embedding_fallback_enabled"), False),
         "kb_embedding_fallback_model": str(raw.get("kb_embedding_fallback_model") or "gemini-embedding-001").strip() or "gemini-embedding-001",
         "kb_index_kind": str(raw.get("kb_index_kind") or "flat_ip").strip().lower() or "flat_ip",
         "kb_rerank_enabled": parse_bool(raw.get("kb_rerank_enabled"), False),
@@ -278,14 +318,35 @@ def read_config(phone_number: str | None = None) -> dict[str, Any]:
 def write_config(data: dict[str, Any]) -> dict[str, Any]:
     current = _load_json(ensure_primary_config_parent())
     filtered = {key: value for key, value in current.items() if key in ALLOWED_CONFIG_KEYS}
+    explicitly_updated_secrets: set[str] = set()
+    clear_secrets = {
+        str(item).strip()
+        for item in (data.get("_clear_secrets") or [])
+        if str(item or "").strip() in SECRET_CONFIG_KEYS
+    }
     for key in ALLOWED_CONFIG_KEYS:
+        if key in clear_secrets:
+            filtered[key] = ""
+            continue
         if key in data:
+            if key in SECRET_CONFIG_KEYS:
+                if _is_secret_placeholder(data[key]):
+                    continue
+                explicitly_updated_secrets.add(key)
             filtered[key] = data[key]
     normalized = _normalize_config(filtered)
+    stored = dict(normalized)
+    for key in SECRET_CONFIG_KEYS:
+        if key in clear_secrets:
+            stored[key] = ""
+            continue
+        if key in explicitly_updated_secrets:
+            continue
+        stored[key] = str(filtered.get(key) or "")
     config_path = ensure_primary_config_parent()
     with config_path.open("w", encoding="utf-8") as handle:
-        json.dump(normalized, handle, indent=4)
-    return normalized
+        json.dump(stored, handle, indent=4)
+    return _normalize_config(stored)
 
 
 def apply_config_env(config: dict[str, Any] | None) -> None:
