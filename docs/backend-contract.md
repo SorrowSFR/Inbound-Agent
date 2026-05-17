@@ -84,9 +84,10 @@ This document is not the frontend prompt by itself. To build the frontend, copy 
     "gemini_live_preflight_timeout": 6.0,
     "gemini_live_connect_timeout": 20.0,
     "gemini_live_connect_retries": 2,
-    "gemini_live_input_transcription_enabled": true,
+    "gemini_live_input_transcription_enabled": false,
     "gemini_live_output_transcription_enabled": false,
     "gemini_tts_model": "gemini-3.1-flash-tts-preview",
+    "gemini_tts_fallback_enabled": false,
     "lang_preset": "multilingual",
     "max_turns": 25,
     "user_away_timeout": 15.0,
@@ -133,7 +134,7 @@ Secret-like fields are redacted in API responses as `********` when configured. 
 
 Set `google_genai_use_vertexai` to `true` to use Vertex AI authentication instead of an AI Studio API key. In Vertex mode the backend passes `vertexai=True`, `google_cloud_project`, and `google_cloud_location` to the Google GenAI and LiveKit Google clients, and uses ADC or `google_application_credentials` for credentials.
 
-Cost estimates use the Gemini 3.1 Flash Live native-audio rates published by Google: USD 0.005 per input-audio minute plus USD 0.018 per output-audio minute. The stored estimate uses call duration as a conservative blended approximation because the backend does not yet persist exact caller-vs-agent audio seconds.
+Cost estimates use the Gemini 3.1 Flash Live native-audio rates published by Google: USD 0.005 per input-audio minute plus USD 0.018 per output-audio minute. The stored estimate uses call duration as a conservative blended approximation because the backend does not yet persist exact caller-vs-agent audio seconds. Input/output audio transcription and the scripted Gemini TTS fallback are opt-in because they can add separate Google usage lines beyond the main Live session.
 
 ### Setup status
 

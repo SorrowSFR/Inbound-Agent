@@ -14,7 +14,7 @@ If you need a frontend, build it separately from the prompt in [docs/ui-agent-pr
 ## Runtime
 
 - Conversation runtime: `gemini-3.1-flash-live-preview`
-- Scripted greeting and wrap-up fallback: `gemini-3.1-flash-tts-preview`
+- Optional scripted greeting and wrap-up fallback: `gemini-3.1-flash-tts-preview` via `GEMINI_TTS_FALLBACK_ENABLED=true`
 - Google auth: AI Studio API key mode or Vertex AI mode via `GOOGLE_GENAI_USE_VERTEXAI=true`
 - Public HTTP entrypoint: `backend_api.py`
 - Agent worker entrypoint: `agent.py`

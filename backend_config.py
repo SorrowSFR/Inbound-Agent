@@ -19,7 +19,8 @@ DEFAULT_GEMINI_LIVE_PREFLIGHT_TIMEOUT = 6.0
 DEFAULT_GEMINI_LIVE_CONNECT_TIMEOUT = 20.0
 DEFAULT_GEMINI_LIVE_CONNECT_RETRIES = 2
 DEFAULT_GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED = True
+DEFAULT_GEMINI_TTS_FALLBACK_ENABLED = False
+DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED = False
 DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED = False
 DEFAULT_GOOGLE_CLOUD_LOCATION = "us-central1"
 DEFAULT_FIRST_LINE = (
@@ -55,6 +56,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gemini_live_input_transcription_enabled": DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED,
     "gemini_live_output_transcription_enabled": DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED,
     "gemini_tts_model": DEFAULT_GEMINI_TTS_MODEL,
+    "gemini_tts_fallback_enabled": DEFAULT_GEMINI_TTS_FALLBACK_ENABLED,
     "lang_preset": "multilingual",
     "max_turns": 25,
     "user_away_timeout": 15.0,
@@ -109,6 +111,7 @@ ENV_KEY_MAP = {
     "gemini_live_input_transcription_enabled": "GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED",
     "gemini_live_output_transcription_enabled": "GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED",
     "gemini_tts_model": "GEMINI_TTS_MODEL",
+    "gemini_tts_fallback_enabled": "GEMINI_TTS_FALLBACK_ENABLED",
     "lang_preset": "LANG_PRESET",
     "max_turns": "MAX_TURNS",
     "user_away_timeout": "USER_AWAY_TIMEOUT",
@@ -261,6 +264,7 @@ def _normalize_config(values: dict[str, Any] | None) -> dict[str, Any]:
         "gemini_live_input_transcription_enabled": parse_bool(raw.get("gemini_live_input_transcription_enabled"), DEFAULT_GEMINI_LIVE_INPUT_TRANSCRIPTION_ENABLED),
         "gemini_live_output_transcription_enabled": parse_bool(raw.get("gemini_live_output_transcription_enabled"), DEFAULT_GEMINI_LIVE_OUTPUT_TRANSCRIPTION_ENABLED),
         "gemini_tts_model": str(raw.get("gemini_tts_model") or DEFAULT_GEMINI_TTS_MODEL).strip() or DEFAULT_GEMINI_TTS_MODEL,
+        "gemini_tts_fallback_enabled": parse_bool(raw.get("gemini_tts_fallback_enabled"), DEFAULT_GEMINI_TTS_FALLBACK_ENABLED),
         "lang_preset": str(raw.get("lang_preset") or "multilingual").strip() or "multilingual",
         "max_turns": max(1, parse_int(raw.get("max_turns"), 25)),
         "user_away_timeout": max(1.0, parse_float(raw.get("user_away_timeout"), 15.0)),

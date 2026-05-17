@@ -98,6 +98,7 @@ from backend_config import (
     DEFAULT_GEMINI_LIVE_PREFLIGHT_TIMEOUT,
     DEFAULT_GEMINI_LIVE_TEMPERATURE,
     DEFAULT_GEMINI_LIVE_VOICE,
+    DEFAULT_GEMINI_TTS_FALLBACK_ENABLED,
     DEFAULT_GEMINI_TTS_MODEL,
     apply_config_env,
     get_outbound_sip_trunk_id,
@@ -229,6 +230,17 @@ def get_gemini_live_model_name(config: dict | None) -> str:
 
 def gemini_live_supports_scripted_generation(config: dict | None) -> bool:
     return "3.1" not in get_gemini_live_model_name(config)
+
+
+def gemini_tts_fallback_enabled(config: dict | None) -> bool:
+    return parse_bool(
+        (config or {}).get("gemini_tts_fallback_enabled"),
+        DEFAULT_GEMINI_TTS_FALLBACK_ENABLED,
+    )
+
+
+def should_use_gemini_tts_fallback(config: dict | None) -> bool:
+    return (not gemini_live_supports_scripted_generation(config)) and gemini_tts_fallback_enabled(config)
 
 
 def get_gemini_tts_model_name(config: dict | None) -> str:
@@ -553,7 +565,7 @@ def build_gemini_realtime_model(live_config: dict):
     voice_name = str(live_config.get("gemini_live_voice") or DEFAULT_GEMINI_LIVE_VOICE).strip() or DEFAULT_GEMINI_LIVE_VOICE
     temperature = max(0.0, min(2.0, parse_float(live_config.get("gemini_live_temperature"), DEFAULT_GEMINI_LIVE_TEMPERATURE)))
     language = str(live_config.get("gemini_live_language") or "").strip()
-    input_transcription_enabled = parse_bool(live_config.get("gemini_live_input_transcription_enabled"), True)
+    input_transcription_enabled = parse_bool(live_config.get("gemini_live_input_transcription_enabled"), False)
     output_transcription_enabled = parse_bool(live_config.get("gemini_live_output_transcription_enabled"), False)
 
     realtime_input_config = google_genai_types.RealtimeInputConfig(
@@ -577,7 +589,12 @@ def build_gemini_realtime_model(live_config: dict):
         output_transcription_enabled,
     )
     if not gemini_live_supports_scripted_generation(live_config):
-        logger.info("[VOICE] Fixed greetings and wrap-ups will use Gemini TTS fallback for this model.")
+        if gemini_tts_fallback_enabled(live_config):
+            logger.info("[VOICE] Fixed greetings and wrap-ups will use Gemini TTS fallback for this model.")
+        else:
+            logger.warning(
+                "[VOICE] Fixed greetings and wrap-ups are disabled for this model because Gemini TTS fallback is off."
+            )
 
     kwargs = {
         "model": model_name,
@@ -591,10 +608,12 @@ def build_gemini_realtime_model(live_config: dict):
         ),
     }
     kwargs.update(build_google_realtime_auth_kwargs(live_config))
-    if input_transcription_enabled:
-        kwargs["input_audio_transcription"] = google_genai_types.AudioTranscriptionConfig()
-    if output_transcription_enabled:
-        kwargs["output_audio_transcription"] = google_genai_types.AudioTranscriptionConfig()
+    kwargs["input_audio_transcription"] = (
+        google_genai_types.AudioTranscriptionConfig() if input_transcription_enabled else None
+    )
+    kwargs["output_audio_transcription"] = (
+        google_genai_types.AudioTranscriptionConfig() if output_transcription_enabled else None
+    )
     if language:
         kwargs["language"] = language
     return google_plugin.realtime.RealtimeModel(**kwargs)
@@ -895,8 +914,11 @@ class OutboundAssistant(Agent):
 
     async def on_enter(self) -> None:
         greeting = get_opening_greeting(self._live_config, self._first_line)
-        if not gemini_live_supports_scripted_generation(self._live_config):
+        if should_use_gemini_tts_fallback(self._live_config):
             await say_with_gemini_tts(self.session, greeting, self._live_config, purpose="opening line")
+            return
+        if not gemini_live_supports_scripted_generation(self._live_config):
+            logger.warning("[VOICE] Skipping scripted opening line because Gemini TTS fallback is disabled.")
             return
         await self.session.generate_reply(
             instructions=f"Say exactly this opening line in a warm Indian phone-call style: {json.dumps(greeting)}"
@@ -958,7 +980,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown()
         return
 
-    if not gemini_live_supports_scripted_generation(live_config):
+    if should_use_gemini_tts_fallback(live_config):
         prefetch_gemini_tts(live_config, get_opening_greeting(live_config), purpose="opening line")
 
     async def get_caller_context(phone: str) -> dict[str, str]:
@@ -1098,8 +1120,11 @@ async def entrypoint(ctx: JobContext) -> None:
     wrapup_tts_text = "Thank you for your time. You can call us back anytime. Have a lovely day. Goodbye."
 
     async def _queue_polite_wrapup() -> None:
-        if not gemini_live_supports_scripted_generation(live_config):
+        if should_use_gemini_tts_fallback(live_config):
             await say_with_gemini_tts(session, wrapup_tts_text, live_config, purpose="wrap-up")
+            return
+        if not gemini_live_supports_scripted_generation(live_config):
+            logger.warning("[VOICE] Skipping scripted wrap-up because Gemini TTS fallback is disabled.")
             return
         await session.generate_reply(instructions=wrapup_instructions)
 

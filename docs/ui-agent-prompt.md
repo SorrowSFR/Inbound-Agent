@@ -163,7 +163,7 @@ Build the app around these primary sections:
 - The conversation runtime is Gemini-only.
 - Default live model is `gemini-3.1-flash-live-preview`.
 - Google runtime can use either AI Studio API key mode or Vertex AI mode via `google_genai_use_vertexai`, `google_cloud_project`, and `google_cloud_location`.
-- Gemini TTS fallback behavior exists inside the backend only; the UI should not try to emulate runtime voice behavior.
+- Optional Gemini TTS fallback behavior exists inside the backend only; the UI should not try to emulate runtime voice behavior.
 - The transcript endpoint returns plain text, not a JSON transcript object.
 - The backend may return `status: "setup_required"` or `status: "not_configured"` for setup or KB-related operations; handle these gracefully in the UI.
 - The backend does not ship auth in this branch.
